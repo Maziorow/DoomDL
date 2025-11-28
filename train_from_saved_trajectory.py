@@ -8,6 +8,7 @@ from imitation.algorithms.bc import BC
 from imitation.data.types import Transitions
 import cv2
 
+# Wczytanie środowiska
 register(
     id="doom_e1m1",
     entry_point="vizdoom.gymnasium_wrapper.base_gymnasium_env:VizdoomEnv",
@@ -15,6 +16,7 @@ register(
 )
 
 
+# Pokazanie gry
 def show_obs(obs, gv_size=2, screen_shape=(240, 320, 3)):
     flat_screen = obs[gv_size:].reshape((3, screen_shape[0], screen_shape[1]))
     screen_hwc = flat_screen.transpose(1, 2, 0).astype(np.uint8)
@@ -22,6 +24,7 @@ def show_obs(obs, gv_size=2, screen_shape=(240, 320, 3)):
     cv2.waitKey(1)
 
 
+# Wrapper na gamevariables i screen (nie akceptuje dicta BC)
 class FlattenObsWrapper(ObservationWrapper):
     def __init__(self, env):
         super().__init__(env)
@@ -40,15 +43,11 @@ class FlattenObsWrapper(ObservationWrapper):
         ])
         self.observation_space = spaces.Box(low=low, high=high, dtype=np.float32)
 
-
+    # Wrzucenie do listy gamevariables i screen po spłaszczeniu wymiarów
     def observation(self, obs):
         gv = np.array(obs["gamevariables"], dtype=np.float32).reshape(-1)
         sc = np.transpose(obs["screen"], (2, 0, 1)).astype(np.float32).reshape(-1)
         return np.concatenate([gv, sc], dtype=np.float32)
-
-
-def make_env(render_mode=None):
-    return FlattenObsWrapper(gymnasium.make("doom_e1m1", render_mode=render_mode))
 
 
 def load_demonstrations(pkl_path="doom_expert.pkl"):
@@ -57,6 +56,7 @@ def load_demonstrations(pkl_path="doom_expert.pkl"):
     obs_list = []
     next_obs_list = []
     acts_list = []
+    # Spłaszczenie wymiarów
     for obs, action, reward, next_obs in trajectories:
         gv = np.array(obs["gamevariables"], dtype=np.float32).reshape(-1)
         sc = np.transpose(obs["screen"], (2, 0, 1)).astype(np.float32).reshape(-1)
@@ -67,6 +67,8 @@ def load_demonstrations(pkl_path="doom_expert.pkl"):
         obs_list.append(flat_obs)
         next_obs_list.append(flat_next_obs)
         acts_list.append(action)
+
+    # Przygotowanie danych dla Transitions
     obs_array = np.stack(obs_list)
     next_obs_array = np.stack(next_obs_list)
     acts_array = np.array(acts_list, dtype=np.int64)
@@ -83,9 +85,11 @@ def load_demonstrations(pkl_path="doom_expert.pkl"):
 
 
 def train_bc_model(
-    save_path="doom_bc_model", demos_path="doom_expert.pkl", bc_epochs=10
+    save_path="doom_bc_model", demos_path="doom_expert.pkl", bc_epochs=1
 ):
-    env = make_env(render_mode=None)
+    env = FlattenObsWrapper(gymnasium.make("doom_e1m1", render_mode=None))
+    # Dla spłaszczonych danych - MlpPolicy; MultiInputPolicy - zwraca błędy potem w BC
+    # bo BC nie chce dicta tylko typ float etc.
     base_model = PPO("MlpPolicy", env, verbose=1, learning_rate=1e-4)
     demos = load_demonstrations(demos_path)
     bc_trainer = BC(
@@ -102,7 +106,7 @@ def train_bc_model(
 
 
 def evaluate_model(model_path="doom_bc_model", episodes=3):
-    env = make_env(render_mode="human")
+    env = FlattenObsWrapper(gymnasium.make("doom_e1m1", render_mode="human"))
     model = PPO.load(model_path)
     for ep in range(episodes):
         obs, info = env.reset()

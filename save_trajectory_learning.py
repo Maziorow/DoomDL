@@ -11,7 +11,6 @@ register(
 
 env = gymnasium.make("doom_e1m1", render_mode="human")
 trajectories = []
-no_action = [0, 0, 0, 0, 0, 0, 0, 0]
 for episode in range(3):
     obs, info = env.reset()
     done = False
@@ -37,7 +36,6 @@ for episode in range(3):
             action = 5
         else:
             action = 0
-
         next_obs, reward, terminated, truncated, info = env.step(action)
         trajectories.append((obs, action, reward, next_obs))
         obs = next_obs

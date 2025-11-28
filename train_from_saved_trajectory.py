@@ -29,9 +29,14 @@ def load_demonstrations(pkl_path="doom_expert.pkl"):
         next_gamevars.append(np.array(next_obs["gamevariables"], dtype=np.float32))
         next_screens.append(np.transpose(next_obs["screen"], (2, 0, 1)))
         acts_list.append(action)
-
-    obs_array = {"gamevariables": np.stack(gamevars), "screen": np.stack(screens)}
-    next_obs_array = {"gamevariables": np.stack(next_gamevars), "screen": np.stack(next_screens)}
+        
+    obs_array = np.array([
+        {"gamevariables": gv, "screen": sc} for gv, sc in zip(gamevars, screens)
+    ])
+    next_obs_array = np.array([
+        {"gamevariables": gv, "screen": sc}
+        for gv, sc in zip(next_gamevars, next_screens)
+    ])
     acts_array = np.array(acts_list, dtype=np.int64)
     dones = np.zeros(len(acts_array), dtype=bool)
     infos = [{} for _ in range(len(acts_array))]
@@ -44,6 +49,7 @@ def load_demonstrations(pkl_path="doom_expert.pkl"):
         infos=infos,
     )
     return transitions
+
 
 def train_bc_model(
     save_path="doom_bc_model", demos_path="doom_expert.pkl", bc_epochs=10
@@ -70,7 +76,7 @@ def train_bc_model(
 def evaluate_model(model_path="doom_bc_model", episodes=3):
     env = gymnasium.make("doom_e1m1", render_mode="human")
     model = PPO.load(model_path)
-    
+
     for ep in range(episodes):
         obs, info = env.reset()
         terminated = False

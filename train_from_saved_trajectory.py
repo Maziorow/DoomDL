@@ -1,4 +1,5 @@
 import pickle
+import keyboard
 import numpy as np
 import gymnasium
 from gymnasium import ObservationWrapper, spaces, RewardWrapper
@@ -144,6 +145,7 @@ def evaluate_model(model_path="doom_bc_model", episodes=3):
         steps = 0
         while not (terminated or truncated):
             action, _ = model.predict(obs, deterministic=True)
+            action = int(action)
             obs, reward, terminated, truncated, info = env.step(action)
             show_obs(obs)
             total_reward += reward
@@ -155,6 +157,6 @@ def evaluate_model(model_path="doom_bc_model", episodes=3):
 
 if __name__ == "__main__":
     train_bc_model(
-        save_path="doom_bc_model", demos_path="doom_expert.pkl", bc_epochs=1
+        save_path="doom_bc_model", demos_path="doom_expert.pkl", bc_epochs=5
     )
     evaluate_model(model_path="doom_bc_model", episodes=3)

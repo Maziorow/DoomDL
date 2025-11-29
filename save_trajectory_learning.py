@@ -5,7 +5,7 @@ import keyboard  # New library for responsive input
 from gymnasium.envs.registration import register
 from numpy import mean
 
-NUMBER_OF_EPISODES = 1
+NUMBER_OF_EPISODES = 5
 END_ON_ESC = True
 REMOVE_EMPTY_ACTIONS = True   
 action_buffer, action_buffer_size = [], 3

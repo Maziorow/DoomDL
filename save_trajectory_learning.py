@@ -3,9 +3,12 @@ import cv2
 import pickle
 import keyboard  # New library for responsive input
 from gymnasium.envs.registration import register
+from numpy import mean
 
-NUMBER_OF_EPISODES = 9
-END_ON_ESC = False
+NUMBER_OF_EPISODES = 1
+END_ON_ESC = True
+REMOVE_EMPTY_ACTIONS = True   
+action_buffer, action_buffer_size = [], 3
 
 # 1. Register: Use rgb_array to avoid VizDoom popping up its own secondary window
 register(
@@ -30,7 +33,7 @@ try:
             screen = obs["screen"]
             
             # Rendering
-            cv2.imshow("Doom", screen)
+            cv2.imshow("Doom", cv2.cvtColor(screen, cv2.COLOR_RGB2BGR))
             # We still need waitKey for cv2 to repaint the window, 
             # but we reduce it to 1ms and ignore the return value for input.
             cv2.waitKey(1) 
@@ -49,16 +52,20 @@ try:
             elif keyboard.is_pressed('esc'): 
                 done = True
 
-            # Step the environment
-            next_obs, reward, terminated, truncated, info = env.step(action)
+            # Regarding pkl size we cut action == 0 when possible
+            action_buffer.append(action)
+            if len(action_buffer) > action_buffer_size:
+                action_buffer.pop(0)
+            terminated = truncated = False
+            if REMOVE_EMPTY_ACTIONS and mean(action_buffer) > 0.1 or len(trajectories) == 0:
+                # Step the environment
+                next_obs, reward, terminated, truncated, info = env.step(action)
+
+                # Save trajectory
+                trajectories.append((obs, action, reward, next_obs))
+                obs = next_obs
             
-            # Save trajectory
-            trajectories.append((obs, action, reward, next_obs))
-            obs = next_obs
-            
-            done = END_ON_ESC or not END_ON_ESC and (terminated or truncated)
-            if done and keyboard.is_pressed('esc'):
-                break 
+            done = terminated or truncated or (END_ON_ESC and keyboard.is_pressed('esc'))
 
 except KeyboardInterrupt:
     print("Interrupted by user")

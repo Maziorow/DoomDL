@@ -1,7 +1,7 @@
 import pickle
 import numpy as np
 import gymnasium
-from gymnasium import ObservationWrapper, spaces
+from gymnasium import ObservationWrapper, spaces, RewardWrapper
 from gymnasium.envs.registration import register
 from stable_baselines3 import PPO
 from imitation.algorithms.bc import BC
@@ -22,6 +22,19 @@ def show_obs(obs, gv_size=2, screen_shape=(240, 320, 3)):
     screen_hwc = flat_screen.transpose(1, 2, 0).astype(np.uint8)
     cv2.imshow("Doom screen", screen_hwc)
     cv2.waitKey(1)
+
+
+class WinBonusWrapper(RewardWrapper):
+    def __init__(self, env, win_bonus=100.0):
+        super().__init__(env)
+        self.win_bonus = win_bonus
+
+    def step(self, action):
+        obs, reward, terminated, truncated, info = self.env.step(action)
+        if terminated and not truncated:
+            reward += self.win_bonus
+            info["win_bonus"] = True
+        return obs, reward, terminated, truncated, info
 
 
 # Wrapper na gamevariables i screen (nie akceptuje dicta BC)
@@ -50,7 +63,7 @@ class FlattenObsWrapper(ObservationWrapper):
         return np.concatenate([gv, sc], dtype=np.float32)
 
 
-def load_demonstrations(pkl_path="doom_expert.pkl"):
+def load_demonstrations(pkl_path="doom_expert.pkl", remove_empty_actions:bool=False):
     with open(pkl_path, "rb") as f:
         trajectories = pickle.load(f)
     obs_list = []
@@ -74,6 +87,17 @@ def load_demonstrations(pkl_path="doom_expert.pkl"):
     acts_array = np.array(acts_list, dtype=np.int64)
     dones = np.zeros(len(acts_array), dtype=bool)
     infos = [{} for _ in range(len(acts_array))]
+
+    # Filtorwanie akcji == 0
+    if remove_empty_actions:
+        mask = acts_array != 0
+        obs_array = obs_array[mask]
+        next_obs_array = next_obs_array[mask]
+        acts_array = acts_array[mask]
+        dones = dones[mask]
+        infos = [info for info, keep in zip(infos, mask) if keep]
+
+
     transitions = Transitions(
         obs=obs_array,
         acts=acts_array,
@@ -87,7 +111,9 @@ def load_demonstrations(pkl_path="doom_expert.pkl"):
 def train_bc_model(
     save_path="doom_bc_model", demos_path="doom_expert.pkl", bc_epochs=1
 ):
-    env = FlattenObsWrapper(gymnasium.make("doom_e1m1", render_mode=None))
+    env = FlattenObsWrapper(
+        WinBonusWrapper(gymnasium.make("doom_e1m1", render_mode=None), win_bonus=1000.0)
+    )
     # Dla spłaszczonych danych - MlpPolicy; MultiInputPolicy - zwraca błędy potem w BC
     # bo BC nie chce dicta tylko typ float etc.
     base_model = PPO("MlpPolicy", env, verbose=1, learning_rate=1e-4)
@@ -106,7 +132,9 @@ def train_bc_model(
 
 
 def evaluate_model(model_path="doom_bc_model", episodes=3):
-    env = FlattenObsWrapper(gymnasium.make("doom_e1m1", render_mode="human"))
+    env = FlattenObsWrapper(
+        WinBonusWrapper(gymnasium.make("doom_e1m1", render_mode=None), win_bonus=1000.0)
+    )
     model = PPO.load(model_path)
     for ep in range(episodes):
         obs, info = env.reset()
@@ -126,6 +154,6 @@ def evaluate_model(model_path="doom_bc_model", episodes=3):
 
 if __name__ == "__main__":
     train_bc_model(
-        save_path="doom_bc_model", demos_path="doom_expert.pkl", bc_epochs=10
+        save_path="doom_bc_model", demos_path="doom_expert.pkl", bc_epochs=1
     )
     evaluate_model(model_path="doom_bc_model", episodes=3)

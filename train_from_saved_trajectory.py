@@ -20,7 +20,7 @@ register(
 def show_obs(obs, gv_size=2, screen_shape=(240, 320, 3)):
     flat_screen = obs[gv_size:].reshape((3, screen_shape[0], screen_shape[1]))
     screen_hwc = flat_screen.transpose(1, 2, 0).astype(np.uint8)
-    cv2.imshow("Doom screen", screen_hwc)
+    cv2.imshow("Doom screen", cv2.cvtColor(screen_hwc, cv2.COLOR_RGB2BGR))
     cv2.waitKey(1)
 
 
@@ -145,11 +145,12 @@ def evaluate_model(model_path="doom_bc_model", episodes=3):
         while not (terminated or truncated):
             action, _ = model.predict(obs, deterministic=True)
             obs, reward, terminated, truncated, info = env.step(action)
-            # show_obs(obs)
+            show_obs(obs)
             total_reward += reward
             steps += 1
         print(f"Episode {ep + 1}: steps={steps}, reward={total_reward}")
     env.close()
+    cv2.destroyAllWindows()
 
 
 if __name__ == "__main__":

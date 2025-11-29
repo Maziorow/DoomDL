@@ -4,7 +4,7 @@ import pickle
 import keyboard  # New library for responsive input
 from gymnasium.envs.registration import register
 
-NUMBER_OF_EPISODES = 9
+NUMBER_OF_EPISODES = 2
 END_ON_ESC = False
 
 # 1. Register: Use rgb_array to avoid VizDoom popping up its own secondary window

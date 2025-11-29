@@ -98,6 +98,7 @@ def train_bc_model(
         policy=base_model.policy,
         demonstrations=demos,
         rng=np.random.default_rng(),
+        batch_size=64
     )
     bc_trainer.train(n_epochs=bc_epochs)
     base_model.save(save_path)
@@ -126,6 +127,6 @@ def evaluate_model(model_path="doom_bc_model", episodes=3):
 
 if __name__ == "__main__":
     train_bc_model(
-        save_path="doom_bc_model", demos_path="doom_expert.pkl", bc_epochs=10
+        save_path="doom_bc_model", demos_path="doom_expert.pkl", bc_epochs=250
     )
     evaluate_model(model_path="doom_bc_model", episodes=3)

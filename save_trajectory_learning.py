@@ -1,64 +1,73 @@
 import gymnasium
 import cv2
 import pickle
+import keyboard  # New library for responsive input
 from gymnasium.envs.registration import register
 
-# Liczba epizodów do przegrania
 NUMBER_OF_EPISODES = 9
+END_ON_ESC = False
 
-# Wybór czy ma user kończyć czy środowisko (True = user)
-END_ON_ESC = True
-
-# Wczytanie środowiska
+# 1. Register: Use rgb_array to avoid VizDoom popping up its own secondary window
 register(
     id="doom_e1m1",
     entry_point="vizdoom.gymnasium_wrapper.base_gymnasium_env:VizdoomEnv",
     kwargs={"level": "env_configurations/doom_min.cfg"},
 )
 
-# Utworzenie środowiska z okienkiem gry
-env = gymnasium.make("doom_e1m1", render_mode="human")
+# 2. Initialize with rgb_array (faster, lets CV2 handle the only window)
+env = gymnasium.make("doom_e1m1", render_mode="rgb_array")
 
-# Trajektorie akcji podejmowanych przez model
 trajectories = []
 
-for episode in range(NUMBER_OF_EPISODES):
-    # rozpoczęcie gry od nowa
-    obs, info = env.reset()
-    done = False
-    while not done:
-        screen = obs["screen"]
-        cv2.imshow("Doom", screen)
-        key = cv2.waitKey(1)
-        # Key binding (kolejność jest od dołu do góry z .cfg)
-        if key == ord("w"):
-            action = 4
-        elif key == ord("s"):
-            action = 3
-        elif key == ord("a"):
-            action = 8
-        elif key == ord("d"):
-            action = 7
-        elif key == ord(" "):
-            action = 6
-        elif key == ord("e"):
-            action = 1
-        elif key == ord("q"):
-            action = 2
-        elif key == ord("u"):
-            action = 5
-        elif key == 27: # esc
-            done = True
-        else:
+print("Controls: W, S, A, D, Space (Shoot), E, Q, U. ESC to finish.")
+
+try:
+    for episode in range(NUMBER_OF_EPISODES):
+        obs, info = env.reset()
+        done = False
+        
+        while not done:
+            screen = obs["screen"]
+            
+            # Rendering
+            cv2.imshow("Doom", screen)
+            # We still need waitKey for cv2 to repaint the window, 
+            # but we reduce it to 1ms and ignore the return value for input.
+            cv2.waitKey(1) 
+
+            # 3. Responsive Input Handling
+            # This checks the state of the hardware key INSTANTLY
             action = 0
-        next_obs, reward, terminated, truncated, info = env.step(action)
-        trajectories.append((obs, action, reward, next_obs))
-        obs = next_obs
-        done = END_ON_ESC or not END_ON_ESC and (terminated or truncated)
+            if keyboard.is_pressed('w'): action = 4
+            elif keyboard.is_pressed('s'): action = 3
+            elif keyboard.is_pressed('a'): action = 8
+            elif keyboard.is_pressed('d'): action = 7
+            elif keyboard.is_pressed('space'): action = 6
+            elif keyboard.is_pressed('e'): action = 1
+            elif keyboard.is_pressed('q'): action = 2
+            elif keyboard.is_pressed('u'): action = 5
+            elif keyboard.is_pressed('esc'): 
+                done = True
 
-env.close()
-cv2.destroyAllWindows()
+            # Step the environment
+            next_obs, reward, terminated, truncated, info = env.step(action)
+            
+            # Save trajectory
+            trajectories.append((obs, action, reward, next_obs))
+            obs = next_obs
+            
+            done = END_ON_ESC or not END_ON_ESC and (terminated or truncated)
+            if done and keyboard.is_pressed('esc'):
+                break 
 
-# Zapis do pkl rozgrywek
-with open("doom_expert.pkl", "wb") as f:
-    pickle.dump(trajectories, f)
+except KeyboardInterrupt:
+    print("Interrupted by user")
+
+finally:
+    env.close()
+    cv2.destroyAllWindows()
+    
+    # Save results
+    with open("doom_expert.pkl", "wb") as f:
+        pickle.dump(trajectories, f)
+    print(f"Saved {len(trajectories)} steps.")

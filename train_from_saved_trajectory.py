@@ -1,162 +1,303 @@
 import pickle
-import keyboard
 import numpy as np
-import gymnasium
-from gymnasium import ObservationWrapper, spaces, RewardWrapper
-from gymnasium.envs.registration import register
+import cv2
+import vizdoom as vzd
+import gymnasium as gym
+from gymnasium import spaces
+import torch as th
+import torch.nn as nn
 from stable_baselines3 import PPO
+from stable_baselines3.common.env_util import make_vec_env
+from stable_baselines3.common.vec_env import DummyVecEnv
+from stable_baselines3.common.torch_layers import BaseFeaturesExtractor
+from stable_baselines3.common.callbacks import EvalCallback
 from imitation.algorithms.bc import BC
 from imitation.data.types import Transitions
-import cv2
+import os
+import math
 
-# Wczytanie środowiska
-register(
-    id="doom_e1m1",
-    entry_point="vizdoom.gymnasium_wrapper.base_gymnasium_env:VizdoomEnv",
-    kwargs={"level": "env_configurations/doom_min.cfg"},
-)
+SCREEN_W, SCREEN_H = 60, 45
+SCREEN_CHANNELS = 3
+SCREEN_SIZE = SCREEN_W * SCREEN_H * SCREEN_CHANNELS
+N_ENVS = 8
 
+class FusedInputExtractor(BaseFeaturesExtractor):
+    def __init__(self, observation_space: spaces.Box, features_dim: int = 256):
+        super().__init__(observation_space, features_dim)
+        total_input = observation_space.shape[0]
+        self.n_vars = total_input - SCREEN_SIZE
+        
+        self.cnn = nn.Sequential(
+            nn.Conv2d(SCREEN_CHANNELS, 32, kernel_size=8, stride=4),
+            nn.ReLU(),
+            nn.Conv2d(32, 64, kernel_size=4, stride=2),
+            nn.ReLU(),
+            nn.Conv2d(64, 64, kernel_size=3, stride=1),
+            nn.ReLU(),
+            nn.Flatten(),
+        )
 
-# Pokazanie gry
-def show_obs(obs, gv_size=2, screen_shape=(240, 320, 3)):
-    flat_screen = obs[gv_size:].reshape((3, screen_shape[0], screen_shape[1]))
-    screen_hwc = flat_screen.transpose(1, 2, 0).astype(np.uint8)
-    cv2.imshow("Doom screen", cv2.cvtColor(screen_hwc, cv2.COLOR_RGB2BGR))
-    cv2.waitKey(1)
+        with th.no_grad():
+            dummy_img = th.zeros(1, SCREEN_CHANNELS, SCREEN_H, SCREEN_W)
+            n_flatten = self.cnn(dummy_img).shape[1]
 
+        self.linear = nn.Sequential(
+            nn.Linear(n_flatten + self.n_vars, features_dim),
+            nn.ReLU()
+        )
 
-class WinBonusWrapper(RewardWrapper):
-    def __init__(self, env, win_bonus=100.0):
-        super().__init__(env)
-        self.win_bonus = win_bonus
+    def forward(self, observations):
+        vars_part = observations[:, :self.n_vars]
+        screen_part_flat = observations[:, self.n_vars:]
+        screen_part_img = screen_part_flat.view(-1, SCREEN_CHANNELS, SCREEN_H, SCREEN_W)
+        cnn_out = self.cnn(screen_part_img)
+        combined = th.cat((cnn_out, vars_part), dim=1)
+        return self.linear(combined)
 
-    def step(self, action):
-        obs, reward, terminated, truncated, info = self.env.step(action)
-        if terminated and not truncated:
-            reward += self.win_bonus
-            info["win_bonus"] = True
-        return obs, reward, terminated, truncated, info
+def flatten_observation(screen, game_vars):
+    resized = cv2.resize(screen, (SCREEN_W, SCREEN_H), interpolation=cv2.INTER_AREA)
+    norm_screen = resized.astype(np.float32) / 255.0
+    trans_screen = np.transpose(norm_screen, (2, 0, 1))
+    flat_screen = trans_screen.flatten()
+    flat_vars = np.array(game_vars, dtype=np.float32)
+    return np.concatenate([flat_vars, flat_screen])
+class VizDoomGym(gym.Env):
+    def __init__(self, config_path="env_configurations/doom_min.cfg"):
+        super().__init__()
+        self.game = vzd.DoomGame()
+        self.game.load_config(config_path)
+        self.game.set_window_visible(False) 
+        self.game.set_screen_format(vzd.ScreenFormat.RGB24)
+        self.game.init()
 
+        self.action_size = len(self.game.get_available_buttons())
+        self.action_space = spaces.Discrete(self.action_size)
 
-# Wrapper na gamevariables i screen (nie akceptuje dicta BC)
-class FlattenObsWrapper(ObservationWrapper):
-    def __init__(self, env):
-        super().__init__(env)
-        gv_space = env.observation_space["gamevariables"]
-        sc_space = env.observation_space["screen"]
-        chw_shape = (sc_space.shape[2], sc_space.shape[0], sc_space.shape[1])
-        self.screen_size = int(np.prod(chw_shape))
-        self.gv_size = int(np.prod(gv_space.shape))
-        low = np.concatenate([
-            np.full(self.gv_size, gv_space.low.min(), dtype=np.float32),
-            np.full(self.screen_size, sc_space.low.min(), dtype=np.float32),
-        ])
-        high = np.concatenate([
-            np.full(self.gv_size, gv_space.high.max(), dtype=np.float32),
-            np.full(self.screen_size, sc_space.high.max(), dtype=np.float32),
-        ])
-        self.observation_space = spaces.Box(low=low, high=high, dtype=np.float32)
+        dummy_state = self.game.get_state()
+        self.num_vars = len(dummy_state.game_variables)
+        total_size = self.num_vars + SCREEN_SIZE
 
-    # Wrzucenie do listy gamevariables i screen po spłaszczeniu wymiarów
-    def observation(self, obs):
-        gv = np.array(obs["gamevariables"], dtype=np.float32).reshape(-1)
-        sc = np.transpose(obs["screen"], (2, 0, 1)).astype(np.float32).reshape(-1)
-        return np.concatenate([gv, sc], dtype=np.float32)
+        self.observation_space = spaces.Box(
+            low=-np.inf, high=np.inf, shape=(total_size,), dtype=np.float32
+        )
 
+        # --- REWARD TUNING ---
+        self.GOAL_REWARD = 1000.0
+        self.KILL_REWARD = 500.0
+        self.HIT_REWARD = 100.0
+        self.ITEM_REWARD = 20.0
+        
+        self.MISSED_SHOT_PENALTY = -5.0
+        self.WALL_STUCK_PENALTY = -200.0
+        self.HIT_TAKEN_PENALTY = -20.0
+        
+        self.MAP_CELL_SIZE = 64.0
 
-def load_demonstrations(pkl_path="doom_expert.pkl", remove_empty_actions:bool=False):
-    with open(pkl_path, "rb") as f:
-        trajectories = pickle.load(f)
-    obs_list = []
-    next_obs_list = []
-    acts_list = []
-    # Spłaszczenie wymiarów
-    for obs, action, reward, next_obs in trajectories:
-        gv = np.array(obs["gamevariables"], dtype=np.float32).reshape(-1)
-        sc = np.transpose(obs["screen"], (2, 0, 1)).astype(np.float32).reshape(-1)
-        flat_obs = np.concatenate([gv, sc], dtype=np.float32)
-        ngv = np.array(next_obs["gamevariables"], dtype=np.float32).reshape(-1)
-        nsc = np.transpose(next_obs["screen"], (2, 0, 1)).astype(np.float32).reshape(-1)
-        flat_next_obs = np.concatenate([ngv, nsc], dtype=np.float32)
+    def _reset_state_tracking(self):
+        self.visited_cells = {}
+        self.last_cell = None
+        self.stuck_timer = 0
+        self.last_pos = (0, 0)
+        
+        state = self.game.get_state()
+        if state:
+            v = state.game_variables
+            self.last_health = v[0]
+            self.last_ammo = v[1]
+            self.last_pos_x = v[2]
+            self.last_pos_y = v[3]
+            self.last_hit_count = v[4] if len(v) > 4 else 0
+            self.last_item_count = v[5] if len(v) > 5 else 0
+            self.last_secret_count = v[6] if len(v) > 6 else 0
+            self.last_kill_count = v[7] if len(v) > 7 else 0
+        else:
+            self.last_health = 100
+            self.last_ammo = 50
+            self.last_pos_x = 0
+            self.last_pos_y = 0
+            self.last_hit_count = 0
+            self.last_item_count = 0
+            self.last_secret_count = 0
+            self.last_kill_count = 0
+
+    def _calculate_custom_rewards(self, current_vars):
+        reward = 0.0
+        
+        c_health = current_vars[0]
+        c_ammo = current_vars[1]
+        c_x, c_y = current_vars[2], current_vars[3]
+        c_hits = current_vars[4] if len(current_vars) > 4 else 0
+        c_items = current_vars[5] if len(current_vars) > 5 else 0
+        c_secrets = current_vars[6] if len(current_vars) > 6 else 0
+        c_kills = current_vars[7] if len(current_vars) > 7 else 0
+
+        dist = math.sqrt((c_x - self.last_pos_x)**2 + (c_y - self.last_pos_y)**2)
+        
+        if dist < 1.0:
+            self.stuck_timer += 1
+        else:
+            self.stuck_timer = 0 
+
+        if self.stuck_timer > 15:
+            reward += self.WALL_STUCK_PENALTY
+            self.stuck_timer = 10 
+
+        ammo_used = self.last_ammo - c_ammo
+        damage_dealt = c_hits - self.last_hit_count
+        
+        if ammo_used > 0:
+            if damage_dealt <= 0:
+                reward += self.MISSED_SHOT_PENALTY
+        
+        if c_kills > self.last_kill_count:
+            reward += (c_kills - self.last_kill_count) * self.KILL_REWARD
+        
+        if damage_dealt > 0:
+            reward += damage_dealt * self.HIT_REWARD
+
+        if c_health < self.last_health:
+            reward += self.HIT_TAKEN_PENALTY
+
+        cell_x = int(c_x / self.MAP_CELL_SIZE)
+        cell_y = int(c_y / self.MAP_CELL_SIZE)
+        current_cell = (cell_x, cell_y)
+        if current_cell != self.last_cell:
+            if current_cell not in self.visited_cells:
+                self.visited_cells[current_cell] = True
+                reward += 2.0
+            self.last_cell = current_cell
+
+        self.last_health = c_health
+        self.last_ammo = c_ammo
+        self.last_pos_x = c_x
+        self.last_pos_y = c_y
+        self.last_hit_count = c_hits
+        self.last_kill_count = c_kills
+        self.last_item_count = c_items
+        
+        return reward
+
+    def step(self, action_index):
+        actions = [False] * self.action_size
+        actions[action_index] = True
+        
+        base_reward = self.game.make_action(actions)
+        done = self.game.is_episode_finished()
+        
+        if not done:
+            state = self.game.get_state()
+            obs = flatten_observation(state.screen_buffer, state.game_variables)
+            custom_reward = self._calculate_custom_rewards(state.game_variables)
+            total_reward = base_reward + custom_reward
+        else:
+            obs = np.zeros(self.observation_space.shape, dtype=np.float32)
+            total_reward = base_reward
+            if self.last_health > 0:
+                total_reward += self.GOAL_REWARD
+
+        return obs, total_reward, done, False, {}
+
+    def reset(self, seed=None, options=None):
+        super().reset(seed=seed)
+        self.game.new_episode()
+        self._reset_state_tracking()
+        state = self.game.get_state()
+        obs = flatten_observation(state.screen_buffer, state.game_variables)
+        return obs, {}
+
+    def close(self):
+        self.game.close()
+
+def load_expert_data_flat(path, env_num_vars):
+    print(f"Loading data from {path}...")
+    with open(path, "rb") as f:
+        raw_data = pickle.load(f)
+
+    obs_list, acts_list = [], []
+    for obs, action, reward, next_obs in raw_data:
+        game_vars = np.array(obs["gamevariables"], dtype=np.float32)
+        if game_vars.shape[0] < env_num_vars:
+            pad = np.zeros(env_num_vars - game_vars.shape[0], dtype=np.float32)
+            game_vars = np.concatenate([game_vars, pad])
+        elif game_vars.shape[0] > env_num_vars:
+            game_vars = game_vars[:env_num_vars]
+        flat_obs = flatten_observation(obs["screen"], game_vars)
         obs_list.append(flat_obs)
-        next_obs_list.append(flat_next_obs)
         acts_list.append(action)
 
-    # Przygotowanie danych dla Transitions
-    obs_array = np.stack(obs_list)
-    next_obs_array = np.stack(next_obs_list)
-    acts_array = np.array(acts_list, dtype=np.int64)
-    dones = np.zeros(len(acts_array), dtype=bool)
-    infos = [{} for _ in range(len(acts_array))]
-
-    # Filtorwanie akcji == 0
-    if remove_empty_actions:
-        mask = acts_array != 0
-        obs_array = obs_array[mask]
-        next_obs_array = next_obs_array[mask]
-        acts_array = acts_array[mask]
-        dones = dones[mask]
-        infos = [info for info, keep in zip(infos, mask) if keep]
-
-
     transitions = Transitions(
-        obs=obs_array,
-        acts=acts_array,
-        next_obs=next_obs_array,
-        dones=dones,
-        infos=infos,
+        obs=np.stack(obs_list),
+        acts=np.array(acts_list, dtype=np.int64),
+        infos=[{}] * len(acts_list),
+        next_obs=np.zeros_like(np.stack(obs_list)),
+        dones=np.zeros(len(acts_list), dtype=bool)
     )
     return transitions
 
+def make_env():
+    return VizDoomGym()
 
-def train_bc_model(
-    save_path="doom_bc_model", demos_path="doom_expert.pkl", bc_epochs=1
-):
-    env = FlattenObsWrapper(
-        WinBonusWrapper(gymnasium.make("doom_e1m1", render_mode=None), win_bonus=1000.0)
+def main():
+    expert_file = "doom_expert.pkl"
+    model_save_path = "doom_agent_model"
+    log_dir = "logs/"
+    os.makedirs(log_dir, exist_ok=True)
+
+    print(f"Creating {N_ENVS} parallel environments...")
+    venv = make_vec_env(make_env, n_envs=N_ENVS, vec_env_cls=DummyVecEnv) 
+    
+    temp = make_env()
+    env_vars = temp.num_vars
+    temp.close()
+
+    try:
+        transitions = load_expert_data_flat(expert_file, env_vars)
+    except Exception as e:
+        print(f"Error: {e}")
+        return
+
+    model = PPO(
+        "MlpPolicy", 
+        venv, 
+        policy_kwargs=dict(
+            features_extractor_class=FusedInputExtractor,
+            features_extractor_kwargs=dict(features_dim=512),
+        ),
+        verbose=1, 
+        learning_rate=1e-4, 
+        batch_size=256,
+        n_steps=2048,
+        ent_coef=0.01,
     )
-    # Dla spłaszczonych danych - MlpPolicy; MultiInputPolicy - zwraca błędy potem w BC
-    # bo BC nie chce dicta tylko typ float etc.
-    base_model = PPO("MlpPolicy", env, verbose=1, learning_rate=1e-4)
-    demos = load_demonstrations(demos_path)
+
+    print("--- Szkolenie na podstawie nagranej rozgrywki---")
     bc_trainer = BC(
-        observation_space=env.observation_space,
-        action_space=env.action_space,
-        policy=base_model.policy,
-        demonstrations=demos,
+        observation_space=venv.observation_space,
+        action_space=venv.action_space,
+        policy=model.policy,
+        demonstrations=transitions,
         rng=np.random.default_rng(),
     )
-    bc_trainer.train(n_epochs=bc_epochs)
-    base_model.save(save_path)
-    env.close()
-    print(f"Model saved to: {save_path}")
+    bc_trainer.train(n_epochs=3)
 
-
-def evaluate_model(model_path="doom_bc_model", episodes=3):
-    env = FlattenObsWrapper(
-        WinBonusWrapper(gymnasium.make("doom_e1m1", render_mode=None), win_bonus=1000.0)
+    print("--- Szkolenie ---")
+    
+    eval_env = make_vec_env(make_env, n_envs=1)
+    
+    eval_callback = EvalCallback(
+        eval_env, 
+        best_model_save_path=log_dir,
+        log_path=log_dir, 
+        eval_freq=20000, 
+        deterministic=True, 
+        render=False
     )
-    model = PPO.load(model_path)
-    for ep in range(episodes):
-        obs, info = env.reset()
-        terminated = False
-        truncated = False
-        total_reward = 0
-        steps = 0
-        while not (terminated or truncated):
-            action, _ = model.predict(obs, deterministic=True)
-            action = int(action)
-            obs, reward, terminated, truncated, info = env.step(action)
-            show_obs(obs)
-            total_reward += reward
-            steps += 1
-        print(f"Episode {ep + 1}: steps={steps}, reward={total_reward}")
-    env.close()
-    cv2.destroyAllWindows()
-
+    
+    model.learn(total_timesteps=3000000, callback=eval_callback)
+    
+    model.save(model_save_path)
+    print("Skonczony trening i zapisany model.")
+    venv.close()
 
 if __name__ == "__main__":
-    train_bc_model(
-        save_path="doom_bc_model", demos_path="doom_expert.pkl", bc_epochs=5
-    )
-    evaluate_model(model_path="doom_bc_model", episodes=3)
+    main()

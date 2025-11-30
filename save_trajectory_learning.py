@@ -1,80 +1,142 @@
-import gymnasium
+import vizdoom as vzd
 import cv2
 import pickle
-import keyboard  # New library for responsive input
-from gymnasium.envs.registration import register
-from numpy import mean
+import keyboard
+import numpy as np
 
-NUMBER_OF_EPISODES = 5
-END_ON_ESC = True
-REMOVE_EMPTY_ACTIONS = True   
-action_buffer, action_buffer_size = [], 3
+CONFIG_PATH = "env_configurations/doom_min.cfg"
+OUTPUT_FILE = "doom_expert.pkl"
+EPISODES_TO_RECORD = 3
 
-# 1. Register: Use rgb_array to avoid VizDoom popping up its own secondary window
-register(
-    id="doom_e1m1",
-    entry_point="vizdoom.gymnasium_wrapper.base_gymnasium_env:VizdoomEnv",
-    kwargs={"level": "env_configurations/doom_min.cfg"},
-)
+class MinimapViz:
+    def __init__(self, width=500, height=500, scale=15):
+        self.w = width
+        self.h = height
+        self.scale = scale
+        self.canvas = np.zeros((self.h, self.w, 3), dtype=np.uint8)
+        self.path = [] 
+        self.off_x = 1500
+        self.off_y = 3500 
 
-# 2. Initialize with rgb_array (faster, lets CV2 handle the only window)
-env = gymnasium.make("doom_e1m1", render_mode="rgb_array")
+    def update(self, game_vars):
+        if len(game_vars) < 4: return self.canvas
 
-trajectories = []
-
-print("Controls: W, S, A, D, Space (Shoot), E, Q, U. ESC to finish.")
-
-try:
-    for episode in range(NUMBER_OF_EPISODES):
-        obs, info = env.reset()
-        done = False
+        px = game_vars[2]
+        py = game_vars[3]
         
-        while not done:
-            screen = obs["screen"]
-            
-            # Rendering
-            cv2.imshow("Doom", cv2.cvtColor(screen, cv2.COLOR_RGB2BGR))
-            # We still need waitKey for cv2 to repaint the window, 
-            # but we reduce it to 1ms and ignore the return value for input.
-            cv2.waitKey(1) 
+        sx = int((px + self.off_x) / self.scale)
+        sy = int(self.h - (py + self.off_y) / self.scale)
 
-            # 3. Responsive Input Handling
-            # This checks the state of the hardware key INSTANTLY
-            action = 0
-            if keyboard.is_pressed('w'): action = 4
-            elif keyboard.is_pressed('s'): action = 3
-            elif keyboard.is_pressed('a'): action = 8
-            elif keyboard.is_pressed('d'): action = 7
-            elif keyboard.is_pressed('space'): action = 6
-            elif keyboard.is_pressed('e'): action = 1
-            elif keyboard.is_pressed('q'): action = 2
-            elif keyboard.is_pressed('u'): action = 5
-            elif keyboard.is_pressed('esc'): 
-                done = True
+        self.path.append((sx, sy))
 
-            # Regarding pkl size we cut action == 0 when possible
-            action_buffer.append(action)
-            if len(action_buffer) > action_buffer_size:
-                action_buffer.pop(0)
-            terminated = truncated = False
-            if REMOVE_EMPTY_ACTIONS and mean(action_buffer) > 0.1 or len(trajectories) == 0:
-                # Step the environment
-                next_obs, reward, terminated, truncated, info = env.step(action)
+        if len(self.path) > 1:
+            cv2.line(self.canvas, self.path[-2], self.path[-1], (255, 255, 255), 1)
 
-                # Save trajectory
-                trajectories.append((obs, action, reward, next_obs))
-                obs = next_obs
-            
-            done = terminated or truncated or (END_ON_ESC and keyboard.is_pressed('esc'))
+        display_img = self.canvas.copy()
+        cv2.circle(display_img, (sx, sy), 3, (0, 0, 255), -1)
+        if len(self.path) > 0:
+            cv2.circle(display_img, self.path[0], 2, (0, 255, 0), -1)
 
-except KeyboardInterrupt:
-    print("Interrupted by user")
+        return display_img
 
-finally:
-    env.close()
-    cv2.destroyAllWindows()
+def main():
+    game = vzd.DoomGame()
+    game.load_config(CONFIG_PATH)
+    game.set_window_visible(False) 
+    game.set_screen_format(vzd.ScreenFormat.RGB24)
+    game.init()
+
+    state = game.get_state()
+    vars_count = len(state.game_variables)
+    print(f"Game Variables Found: {vars_count}")
     
-    # Save results
-    with open("doom_expert.pkl", "wb") as f:
-        pickle.dump(trajectories, f)
-    print(f"Saved {len(trajectories)} steps.")
+    if vars_count < 4:
+        print("WARNING: It looks like POSITION_X and POSITION_Y are missing!")
+        print("Please check available_game_variables in doom_min.cfg")
+        input("Press Enter to continue anyway (or Ctrl+C to fix config)...")
+
+    action_count = len(game.get_available_buttons())
+    print(f"Actions initialized: {action_count}")
+    print("Controls: W, S, A, D, Space (Shoot), E (Turn R), U (Use), Q (Turn L). ESC to Quit.")
+
+    minimap = MinimapViz()
+    trajectories = []
+
+    try:
+        for episode in range(EPISODES_TO_RECORD):
+            print(f"--- Recording Episode {episode + 1} ---")
+            game.new_episode()
+            
+            minimap.path = [] 
+            minimap.canvas[:] = 0 
+
+            while not game.is_episode_finished():
+                state = game.get_state()
+                screen = state.screen_buffer
+                game_vars = state.game_variables
+
+                cv2.imshow("Doom Recorder", cv2.cvtColor(screen, cv2.COLOR_RGB2BGR))
+                map_img = minimap.update(game_vars)
+                cv2.imshow("Minimap", map_img)
+                cv2.waitKey(1)
+
+                actions = [False] * action_count
+                
+                if keyboard.is_pressed('w'): actions[4] = True
+                if keyboard.is_pressed('s'): actions[5] = True
+                if keyboard.is_pressed('a'): actions[0] = True
+                if keyboard.is_pressed('d'): actions[1] = True
+                
+                if keyboard.is_pressed('q'): actions[6] = True
+                if keyboard.is_pressed('e'): actions[7] = True
+                
+                if keyboard.is_pressed('space'): actions[2] = True
+                if keyboard.is_pressed('u'): actions[3] = True
+
+                if keyboard.is_pressed('esc'):
+                    print("Recording cancelled.")
+                    return
+
+                reward = game.make_action(actions)
+
+                action_index = 8
+                
+                if actions[2]: action_index = 2
+                elif actions[3]: action_index = 3
+                elif actions[4]: action_index = 4
+                elif actions[5]: action_index = 5
+                elif actions[0]: action_index = 0
+                elif actions[1]: action_index = 1
+                elif actions[6]: action_index = 6
+                elif actions[7]: action_index = 7
+
+                if action_index != 8:
+                    next_state_data = None
+                    if not game.is_episode_finished():
+                        ns = game.get_state()
+                        next_state_data = {
+                            "screen": ns.screen_buffer, 
+                            "gamevariables": ns.game_variables
+                        }
+
+                    current_obs = {
+                        "screen": screen, 
+                        "gamevariables": game_vars
+                    }
+                    
+                    trajectories.append((current_obs, action_index, reward, next_state_data))
+
+            print(f"Episode {episode + 1} Complete.")
+
+    finally:
+        game.close()
+        cv2.destroyAllWindows()
+        
+        clean_trajectories = [t for t in trajectories if t[3] is not None]
+
+        with open(OUTPUT_FILE, "wb") as f:
+            pickle.dump(clean_trajectories, f)
+        print(f"Saved {len(clean_trajectories)} steps to {OUTPUT_FILE}.")
+
+if __name__ == "__main__":
+    main()

@@ -4,3 +4,4 @@ doom.wad
 doom_ppo_model.zip
 *pkl
 *zip
+/logs/**

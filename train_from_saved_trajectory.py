@@ -264,7 +264,8 @@ def make_env():
 
 
 def main():
-    expert_file = "doom_expert.pkl"
+    expert_dir = "./doom_expert"
+    expert_set = os.listdir(expert_dir)
     model_save_path = "doom_agent_model"
     log_dir = "logs/"
     os.makedirs(log_dir, exist_ok=True)
@@ -275,12 +276,6 @@ def main():
     temp = make_env()
     env_vars = temp.num_vars
     temp.close()
-
-    try:
-        transitions = load_expert_data_flat(expert_file, env_vars)
-    except Exception as e:
-        print(f"Error: {e}")
-        return
 
     model = PPO(
         "MlpPolicy",
@@ -295,16 +290,22 @@ def main():
         n_steps=2048,
         ent_coef=0.01,
     )
-
-    print("--- Szkolenie na podstawie nagranej rozgrywki---")
-    bc_trainer = BC(
-        observation_space=venv.observation_space,
-        action_space=venv.action_space,
-        policy=model.policy,
-        demonstrations=transitions,
-        rng=np.random.default_rng(),
-    )
-    bc_trainer.train(n_epochs=3)
+    bc_trainer = None
+    for expert_gameplay in expert_set:
+        try:
+            transitions = load_expert_data_flat(f"./{expert_dir}/{expert_gameplay}", env_vars)
+        except Exception as e:
+            print(f"Error: {e}")
+            return
+        print("--- Szkolenie na podstawie nagranej rozgrywki---")
+        bc_trainer = bc_trainer if bc_trainer is not None else BC(
+            observation_space=venv.observation_space,
+            action_space=venv.action_space,
+            policy=model.policy,
+            demonstrations=transitions,
+            rng=np.random.default_rng(),
+        )
+        bc_trainer.train(n_epochs=3)
 
     print("--- Szkolenie ---")
 
@@ -319,7 +320,7 @@ def main():
         render=False,
     )
 
-    model.learn(total_timesteps=3000000, callback=eval_callback)
+    # model.learn(total_timesteps=3000000, callback=eval_callback)
 
     model.save(model_save_path)
     print("Skonczony trening i zapisany model.")

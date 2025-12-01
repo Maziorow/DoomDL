@@ -1,3 +1,4 @@
+import os
 import vizdoom as vzd
 import cv2
 import pickle
@@ -5,9 +6,8 @@ import keyboard
 import numpy as np
 
 CONFIG_PATH = "env_configurations/doom_min.cfg"
-OUTPUT_FILE = "doom_expert.pkl"
 EPISODES_TO_RECORD = 3
-
+DIR_NAME = "doom_expert"
 class MinimapViz:
     def __init__(self, width=500, height=500, scale=15):
         self.w = width
@@ -62,8 +62,12 @@ def main():
     minimap = MinimapViz()
     trajectories = []
 
+    if not os.path.exists(DIR_NAME):
+        os.makedirs(DIR_NAME)
+    
     try:
         for episode in range(EPISODES_TO_RECORD):
+            output_file = f"{DIR_NAME}/doom_expert{episode}.pkl"
             print(f"--- Recording Episode {episode + 1} ---")
             game.new_episode()
             
@@ -127,16 +131,15 @@ def main():
                     trajectories.append((current_obs, action_index, reward, next_state_data))
 
             print(f"Episode {episode + 1} Complete.")
+            clean_trajectories = [t for t in trajectories if t[3] is not None]
+
+            with open(output_file, "wb") as f:
+                pickle.dump(clean_trajectories, f)
+            print(f"Saved {len(clean_trajectories)} steps to {output_file}.")
 
     finally:
         game.close()
         cv2.destroyAllWindows()
-        
-        clean_trajectories = [t for t in trajectories if t[3] is not None]
-
-        with open(OUTPUT_FILE, "wb") as f:
-            pickle.dump(clean_trajectories, f)
-        print(f"Saved {len(clean_trajectories)} steps to {OUTPUT_FILE}.")
 
 if __name__ == "__main__":
     main()

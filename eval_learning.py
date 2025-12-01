@@ -35,6 +35,11 @@ class MinimapViz:
         cv2.circle(display_img, (sx, sy), 3, (0, 0, 255), -1)
         if len(self.path) > 0:
             cv2.circle(display_img, self.path[0], 2, (0, 255, 0), -1)
+        cv2.putText(display_img, f"x: {px:.2f}, y: {py:.2f}",
+                    (100, 500),
+                    cv2.FONT_HERSHEY_SIMPLEX,
+                    1, (255,255,255),
+                    1,2)
         return display_img
 
 class FusedInputExtractor(BaseFeaturesExtractor):

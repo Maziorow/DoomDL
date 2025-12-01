@@ -320,7 +320,7 @@ def main():
         render=False,
     )
 
-    # model.learn(total_timesteps=3000000, callback=eval_callback)
+    model.learn(total_timesteps=3000000, callback=eval_callback)
 
     model.save(model_save_path)
     print("Skonczony trening i zapisany model.")

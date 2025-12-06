@@ -138,7 +138,7 @@ def main():
             obs, reward, done, _, _ = env.step(action)
             score += reward
 
-            if cv2.waitKey(1) == 27:
+            if cv2.waitKey(1) & 0xFF == ord('q'):
                 break
 
         print(f"Episode {ep+1} score: {score:.1f}")

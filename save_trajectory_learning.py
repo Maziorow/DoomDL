@@ -60,13 +60,13 @@ def main():
     print("Controls: W, S, A, D, Space (Shoot), E (Turn R), U (Use), Q (Turn L). ESC to Quit.")
 
     minimap = MinimapViz()
-    trajectories = []
 
     if not os.path.exists(DIR_NAME):
         os.makedirs(DIR_NAME)
     
     try:
         for episode in range(EPISODES_TO_RECORD):
+            trajectories = []
             output_file = f"{DIR_NAME}/doom_expert{episode}.pkl"
             print(f"--- Recording Episode {episode + 1} ---")
             game.new_episode()

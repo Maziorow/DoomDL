@@ -15,44 +15,51 @@ from imitation.algorithms.bc import BC
 from imitation.data.types import Transitions
 import os
 import math
+import argparse
 
 SCREEN_W, SCREEN_H = 60, 45
 SCREEN_CHANNELS = 3
 SCREEN_SIZE = SCREEN_W * SCREEN_H * SCREEN_CHANNELS
 N_ENVS = 8
 
+
 class FusedInputExtractor(BaseFeaturesExtractor):
     def __init__(self, observation_space: spaces.Box, features_dim: int = 256):
         super().__init__(observation_space, features_dim)
+
         total_input = observation_space.shape[0]
         self.n_vars = total_input - SCREEN_SIZE
-        
+
         self.cnn = nn.Sequential(
-            nn.Conv2d(SCREEN_CHANNELS, 32, kernel_size=8, stride=4),
+            nn.Conv2d(3, 16, 3, stride=1, padding=1),
             nn.ReLU(),
-            nn.Conv2d(32, 64, kernel_size=4, stride=2),
+            nn.Conv2d(16, 32, 3, stride=2, padding=1),
             nn.ReLU(),
-            nn.Conv2d(64, 64, kernel_size=3, stride=1),
+            nn.BatchNorm2d(32),
+            nn.Conv2d(32, 64, 3, stride=2, padding=1),
             nn.ReLU(),
-            nn.Flatten(),
         )
 
         with th.no_grad():
             dummy_img = th.zeros(1, SCREEN_CHANNELS, SCREEN_H, SCREEN_W)
-            n_flatten = self.cnn(dummy_img).shape[1]
+            n_flatten = self.cnn(dummy_img).view(1, -1).shape[1]
 
         self.linear = nn.Sequential(
-            nn.Linear(n_flatten + self.n_vars, features_dim),
-            nn.ReLU()
+            nn.Linear(n_flatten + self.n_vars, features_dim), nn.ReLU()
         )
 
     def forward(self, observations):
-        vars_part = observations[:, :self.n_vars]
-        screen_part_flat = observations[:, self.n_vars:]
+        vars_part = observations[:, : self.n_vars]
+
+        screen_part_flat = observations[:, self.n_vars :]
         screen_part_img = screen_part_flat.view(-1, SCREEN_CHANNELS, SCREEN_H, SCREEN_W)
+
         cnn_out = self.cnn(screen_part_img)
+        cnn_out = th.flatten(cnn_out, start_dim=1)
+
         combined = th.cat((cnn_out, vars_part), dim=1)
         return self.linear(combined)
+
 
 def flatten_observation(screen, game_vars):
     resized = cv2.resize(screen, (SCREEN_W, SCREEN_H), interpolation=cv2.INTER_AREA)
@@ -60,13 +67,27 @@ def flatten_observation(screen, game_vars):
     trans_screen = np.transpose(norm_screen, (2, 0, 1))
     flat_screen = trans_screen.flatten()
     flat_vars = np.array(game_vars, dtype=np.float32)
+
+    if flat_vars.shape[0] > 0:
+        flat_vars[0] /= 100.0  # health
+    if flat_vars.shape[0] > 1:
+        flat_vars[1] /= 100.0  # ammo
+    if flat_vars.shape[0] > 2:
+        flat_vars[2] /= 1024.0  # x
+    if flat_vars.shape[0] > 3:
+        flat_vars[3] /= 1024.0  # y
+    if flat_vars.shape[0] > 4:
+        flat_vars[4:] /= 50.0
+
     return np.concatenate([flat_vars, flat_screen])
+
+
 class VizDoomGym(gym.Env):
     def __init__(self, config_path="env_configurations/doom_min.cfg"):
         super().__init__()
         self.game = vzd.DoomGame()
         self.game.load_config(config_path)
-        self.game.set_window_visible(False) 
+        self.game.set_window_visible(False)
         self.game.set_screen_format(vzd.ScreenFormat.RGB24)
         self.game.init()
 
@@ -81,16 +102,21 @@ class VizDoomGym(gym.Env):
             low=-np.inf, high=np.inf, shape=(total_size,), dtype=np.float32
         )
 
+        self.c_x_buff = []
+        self.c_y_buff = []
+        self.MAX_BUFF_SIZE = 10
+
         # --- REWARD TUNING ---
-        self.GOAL_REWARD = 1000.0
-        self.KILL_REWARD = 500.0
-        self.HIT_REWARD = 100.0
+        self.GOAL_REWARD = 5000.0
+        self.KILL_REWARD = 1000.0
+        self.HIT_REWARD = 200.0
         self.ITEM_REWARD = 20.0
-        
-        self.MISSED_SHOT_PENALTY = -5.0
-        self.WALL_STUCK_PENALTY = -200.0
-        self.HIT_TAKEN_PENALTY = -20.0
-        
+
+        self.MISSED_SHOT_PENALTY = -100.0
+        self.WALL_STUCK_PENALTY = -1000.0
+        self.MIN_DISTANCE_BEFORE_PENALTY = 1.0
+        self.HIT_TAKEN_PENALTY = -500.0
+
         self.MAP_CELL_SIZE = 64.0
 
     def _reset_state_tracking(self):
@@ -98,7 +124,7 @@ class VizDoomGym(gym.Env):
         self.last_cell = None
         self.stuck_timer = 0
         self.last_pos = (0, 0)
-        
+
         state = self.game.get_state()
         if state:
             v = state.game_variables
@@ -120,9 +146,21 @@ class VizDoomGym(gym.Env):
             self.last_secret_count = 0
             self.last_kill_count = 0
 
+    def actualize_buff(self, c_x, c_y):
+        if len(self.c_x_buff) == 0:
+            self.c_x_buff = [c_x] * (self.MAX_BUFF_SIZE - 1)
+            self.c_y_buff = [c_y] * (self.MAX_BUFF_SIZE - 1)
+
+        if len(self.c_x_buff) >= self.MAX_BUFF_SIZE:
+            self.c_x_buff.pop(0)
+            self.c_y_buff.pop(0)
+
+        self.c_x_buff.append(c_x)
+        self.c_y_buff.append(c_y)
+
     def _calculate_custom_rewards(self, current_vars):
         reward = 0.0
-        
+
         c_health = current_vars[0]
         c_ammo = current_vars[1]
         c_x, c_y = current_vars[2], current_vars[3]
@@ -131,27 +169,31 @@ class VizDoomGym(gym.Env):
         c_secrets = current_vars[6] if len(current_vars) > 6 else 0
         c_kills = current_vars[7] if len(current_vars) > 7 else 0
 
-        dist = math.sqrt((c_x - self.last_pos_x)**2 + (c_y - self.last_pos_y)**2)
-        
-        if dist < 1.0:
+        self.actualize_buff(c_x, c_y)
+        # dist = math.sqrt((c_x - self.last_pos_x)**2 + (c_y - self.last_pos_y)**2)
+        dist = math.sqrt(
+            (c_x - np.mean(self.c_x_buff)) ** 2 + (c_y - np.mean(self.c_y_buff)) ** 2
+        )
+
+        if dist < self.MIN_DISTANCE_BEFORE_PENALTY:
             self.stuck_timer += 1
         else:
-            self.stuck_timer = 0 
+            self.stuck_timer = 0
 
         if self.stuck_timer > 15:
             reward += self.WALL_STUCK_PENALTY
-            self.stuck_timer = 10 
+            self.stuck_timer = 10
 
         ammo_used = self.last_ammo - c_ammo
         damage_dealt = c_hits - self.last_hit_count
-        
+
         if ammo_used > 0:
             if damage_dealt <= 0:
                 reward += self.MISSED_SHOT_PENALTY
-        
+
         if c_kills > self.last_kill_count:
             reward += (c_kills - self.last_kill_count) * self.KILL_REWARD
-        
+
         if damage_dealt > 0:
             reward += damage_dealt * self.HIT_REWARD
 
@@ -174,16 +216,16 @@ class VizDoomGym(gym.Env):
         self.last_hit_count = c_hits
         self.last_kill_count = c_kills
         self.last_item_count = c_items
-        
+
         return reward
 
     def step(self, action_index):
         actions = [False] * self.action_size
         actions[action_index] = True
-        
+
         base_reward = self.game.make_action(actions)
         done = self.game.is_episode_finished()
-        
+
         if not done:
             state = self.game.get_state()
             obs = flatten_observation(state.screen_buffer, state.game_variables)
@@ -208,6 +250,7 @@ class VizDoomGym(gym.Env):
     def close(self):
         self.game.close()
 
+
 def load_expert_data_flat(path, env_num_vars):
     print(f"Loading data from {path}...")
     with open(path, "rb") as f:
@@ -230,74 +273,103 @@ def load_expert_data_flat(path, env_num_vars):
         acts=np.array(acts_list, dtype=np.int64),
         infos=[{}] * len(acts_list),
         next_obs=np.zeros_like(np.stack(obs_list)),
-        dones=np.zeros(len(acts_list), dtype=bool)
+        dones=np.zeros(len(acts_list), dtype=bool),
     )
     return transitions
+
 
 def make_env():
     return VizDoomGym()
 
-def main():
-    expert_file = "doom_expert.pkl"
+
+def main(args):
+    th.manual_seed(args.seed)
+    np.random.seed(args.seed)
+    expert_dir = "./doom_expert"
+    expert_set = os.listdir(expert_dir)
     model_save_path = "doom_agent_model"
     log_dir = "logs/"
     os.makedirs(log_dir, exist_ok=True)
 
     print(f"Creating {N_ENVS} parallel environments...")
-    venv = make_vec_env(make_env, n_envs=N_ENVS, vec_env_cls=DummyVecEnv) 
-    
+    venv = make_vec_env(make_env, n_envs=N_ENVS, vec_env_cls=DummyVecEnv)
+
     temp = make_env()
     env_vars = temp.num_vars
     temp.close()
 
-    try:
-        transitions = load_expert_data_flat(expert_file, env_vars)
-    except Exception as e:
-        print(f"Error: {e}")
-        return
-
     model = PPO(
-        "MlpPolicy", 
-        venv, 
+        "MlpPolicy",
+        venv,
         policy_kwargs=dict(
             features_extractor_class=FusedInputExtractor,
             features_extractor_kwargs=dict(features_dim=512),
         ),
-        verbose=1, 
-        learning_rate=1e-4, 
+        verbose=1,
+        learning_rate=args.learning_rate,
         batch_size=256,
         n_steps=2048,
         ent_coef=0.01,
     )
+    if args.model != "NONE":
+        temp_model = PPO.load(args.model)
+        model.set_parameters(temp_model.get_parameters())
 
-    print("--- Szkolenie na podstawie nagranej rozgrywki---")
-    bc_trainer = BC(
-        observation_space=venv.observation_space,
-        action_space=venv.action_space,
-        policy=model.policy,
-        demonstrations=transitions,
-        rng=np.random.default_rng(),
-    )
-    bc_trainer.train(n_epochs=3)
+    policy = model.policy
+    for param in policy.features_extractor.parameters():
+        param.requires_grad = True
+    if args.bc_train:
+        for expert_gameplay in expert_set:
+            try:
+                transitions = load_expert_data_flat(f"./{expert_dir}/{expert_gameplay}", env_vars)
+            except Exception as e:
+                print(f"Error: {e}")
+                return
+            print("--- Szkolenie na podstawie nagranej rozgrywki---")
+
+            bc_trainer = BC(
+                observation_space=venv.observation_space,
+                action_space=venv.action_space,
+                policy=policy,
+                demonstrations=transitions,
+                rng=np.random.default_rng(args.seed),
+            )
+            bc_trainer.train(n_epochs=args.bc_epochs)
 
     print("--- Szkolenie ---")
-    
-    eval_env = make_vec_env(make_env, n_envs=1)
-    
-    eval_callback = EvalCallback(
-        eval_env, 
-        best_model_save_path=log_dir,
-        log_path=log_dir, 
-        eval_freq=20000, 
-        deterministic=True, 
-        render=False
-    )
-    
-    model.learn(total_timesteps=3000000, callback=eval_callback)
-    
+
+    if args.ppo_train:
+        eval_env = make_vec_env(make_env, n_envs=1)
+
+        eval_callback = EvalCallback(
+            eval_env,
+            best_model_save_path=log_dir,
+            log_path=log_dir,
+            eval_freq=args.eval_frequency,
+            deterministic=True,
+            render=False,
+        )
+
+        model.learn(total_timesteps=args.ppo_timesteps, callback=eval_callback)
+
     model.save(model_save_path)
     print("Skonczony trening i zapisany model.")
     venv.close()
 
+
 if __name__ == "__main__":
-    main()
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--bc_train", action="store_true")
+    parser.add_argument("--ppo_train", action="store_true")
+    parser.add_argument("--bc_epochs", type=int, default=10)
+    parser.add_argument("--ppo_timesteps", type=int, default=3000000)
+    parser.add_argument("--envs", type=int, default=8)
+    parser.add_argument("--model", type=str, default="NONE")
+    parser.add_argument("--seed", type=int, default=42)
+    parser.add_argument("--learning_rate", type=float, default=0.0001)
+    parser.add_argument("--eval_frequency", type=int, default=20000)
+
+    args = parser.parse_args()
+    N_ENVS = args.envs
+
+    main(args)

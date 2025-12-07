@@ -6,11 +6,11 @@ import gymnasium as gym
 from gymnasium import spaces
 import torch as th
 import torch.nn as nn
-from stable_baselines3 import PPO, BaseCallback
+from stable_baselines3 import PPO
 from stable_baselines3.common.env_util import make_vec_env
 from stable_baselines3.common.vec_env import DummyVecEnv
 from stable_baselines3.common.torch_layers import BaseFeaturesExtractor
-from stable_baselines3.common.callbacks import EvalCallback
+from stable_baselines3.common.callbacks import EvalCallback, BaseCallback
 from imitation.algorithms.bc import BC
 from imitation.data.types import Transitions
 import os
@@ -30,6 +30,7 @@ SCREEN_CHANNELS = 3
 SCREEN_SIZE = SCREEN_W * SCREEN_H * SCREEN_CHANNELS
 N_ENVS = 8
 
+REWARD_SCALING = 0.001
 
 class DetailedRewardLogger(BaseCallback):
     def __init__(self, log_file="training_log.csv", verbose=0):
@@ -189,6 +190,7 @@ class VizDoomGym(gym.Env):
         self.MAX_BUFF_SIZE = 10
 
         # --- REWARD TUNING ---
+        # We can set rewards high as at the end they're getting scaled by 1000
         self.GOAL_REWARD = 5000.0
         self.KILL_REWARD = 1000.0
         self.HIT_REWARD = 200.0
@@ -198,6 +200,8 @@ class VizDoomGym(gym.Env):
         self.MIN_DISTANCE_BEFORE_PENALTY = 1.0
         self.HIT_TAKEN_PENALTY = -500.0
         self.MAP_CELL_SIZE = 64.0
+
+        self.REWARD_SCALING = 0.001
 
     def _reset_state_tracking(self):
         self.visited_cells = {}
@@ -268,8 +272,8 @@ class VizDoomGym(gym.Env):
             self.stuck_timer = 0
 
         if self.stuck_timer > 15:
-            reward += self.WALL_STUCK_PENALTY
-            self.episode_hist["stuck_penalty"] += self.WALL_STUCK_PENALTY # <--- LOG
+            reward += self.WALL_STUCK_PENALTY * self.REWARD_SCALING
+            self.episode_hist["stuck_penalty"] += self.WALL_STUCK_PENALTY * self.REWARD_SCALING # <--- LOG
             self.stuck_timer = 10
 
         ammo_used = self.last_ammo - c_ammo
@@ -277,22 +281,22 @@ class VizDoomGym(gym.Env):
 
         if ammo_used > 0:
             if damage_dealt <= 0:
-                reward += self.MISSED_SHOT_PENALTY
-                self.episode_hist["miss_penalty"] += self.MISSED_SHOT_PENALTY # <--- LOG
+                reward += self.MISSED_SHOT_PENALTY * self.REWARD_SCALING
+                self.episode_hist["miss_penalty"] += self.MISSED_SHOT_PENALTY * self.REWARD_SCALING # <--- LOG
 
         if c_kills > self.last_kill_count:
             r = (c_kills - self.last_kill_count) * self.KILL_REWARD
-            reward += r
-            self.episode_hist["kill_reward"] += r # <--- LOG
+            reward += r * self.REWARD_SCALING
+            self.episode_hist["kill_reward"] += r * self.REWARD_SCALING # <--- LOG
 
         if damage_dealt > 0:
             r = damage_dealt * self.HIT_REWARD
-            reward += r
-            self.episode_hist["hit_reward"] += r # <--- LOG
+            reward += r * self.REWARD_SCALING
+            self.episode_hist["hit_reward"] += r * self.REWARD_SCALING # <--- LOG
 
         if c_health < self.last_health:
-            reward += self.HIT_TAKEN_PENALTY
-            self.episode_hist["damage_taken_penalty"] += self.HIT_TAKEN_PENALTY # <--- LOG
+            reward += self.HIT_TAKEN_PENALTY * self.REWARD_SCALING
+            self.episode_hist["damage_taken_penalty"] += self.HIT_TAKEN_PENALTY * self.REWARD_SCALING # <--- LOG
 
 
         cell_x = int(c_x / self.MAP_CELL_SIZE)
@@ -301,8 +305,8 @@ class VizDoomGym(gym.Env):
         if current_cell != self.last_cell:
             if current_cell not in self.visited_cells:
                 self.visited_cells[current_cell] = True
-                reward += 2.0
-                self.episode_hist["move_reward"] += 2.0 # <--- LOG
+                reward += 2.0 * self.REWARD_SCALING
+                self.episode_hist["move_reward"] += 2.0 * self.REWARD_SCALING # <--- LOG
             self.last_cell = current_cell
 
         self.last_health = c_health
@@ -328,7 +332,7 @@ class VizDoomGym(gym.Env):
             state = self.game.get_state()
             obs = flatten_observation(state.screen_buffer, state.game_variables)
             custom_reward = self._calculate_custom_rewards(state.game_variables)
-            total_reward = base_reward + custom_reward
+            total_reward = (base_reward * self.REWARD_SCALING)  + custom_reward
             
             self.episode_hist["total_reward"] += total_reward
         else:
@@ -420,6 +424,9 @@ def main(args):
         temp_model = PPO.load(args.model)
         model.set_parameters(temp_model.get_parameters())
 
+    log_csv_path = os.path.join(log_dir, "detailed_rewards.csv")
+    reward_logger = DetailedRewardLogger(log_file=log_csv_path)
+
     policy = model.policy
     for param in policy.features_extractor.parameters():
         param.requires_grad = True
@@ -455,9 +462,13 @@ def main(args):
             render=False,
         )
 
-        model.learn(total_timesteps=args.ppo_timesteps, callback=eval_callback)
+        callbacks = [eval_callback, reward_logger]
+
+        model.learn(total_timesteps=args.ppo_timesteps, callback=callbacks)
 
     model.save(model_save_path)
+    log_png = os.path.join(log_dir, "training_summary.png")
+    plot_training_results(log_file=log_csv_path, output_img=log_png)
     print("Skonczony trening i zapisany model.")
     venv.close()
 

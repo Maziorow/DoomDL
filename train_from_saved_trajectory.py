@@ -6,7 +6,7 @@ import gymnasium as gym
 from gymnasium import spaces
 import torch as th
 import torch.nn as nn
-from stable_baselines3 import PPO
+from stable_baselines3 import PPO, BaseCallback
 from stable_baselines3.common.env_util import make_vec_env
 from stable_baselines3.common.vec_env import DummyVecEnv
 from stable_baselines3.common.torch_layers import BaseFeaturesExtractor
@@ -16,12 +16,94 @@ from imitation.data.types import Transitions
 import os
 import math
 import argparse
+import csv
+from typing import Callable
+import matplotlib.pyplot as plt
+
+def linear_schedule(initial_value: float) -> Callable[[float], float]:
+    def func(progress_remaining: float) -> float:
+        return progress_remaining * initial_value
+    return func
 
 SCREEN_W, SCREEN_H = 60, 45
 SCREEN_CHANNELS = 3
 SCREEN_SIZE = SCREEN_W * SCREEN_H * SCREEN_CHANNELS
 N_ENVS = 8
 
+
+class DetailedRewardLogger(BaseCallback):
+    def __init__(self, log_file="training_log.csv", verbose=0):
+        super().__init__(verbose)
+        self.log_file = log_file
+        self.file_handler = open(self.log_file, "w", newline="")
+        self.writer = csv.writer(self.file_handler)
+        self.writer.writerow([
+            "episode", "total_reward", "stuck_penalty", "kill_reward", 
+            "hit_reward", "move_reward", "miss_penalty", "damage_taken_penalty"
+        ])
+        self.episode_count = 0
+
+    def _on_step(self) -> bool:
+        for info in self.locals["infos"]:
+            if "episode_stats" in info:
+                self.episode_count += 1
+                stats = info["episode_stats"]
+                self.writer.writerow([
+                    self.episode_count,
+                    stats["total_reward"],
+                    stats["stuck_penalty"],
+                    stats["kill_reward"],
+                    stats["hit_reward"],
+                    stats["move_reward"],
+                    stats["miss_penalty"],
+                    stats["damage_taken_penalty"]
+                ])
+                if self.episode_count % 10 == 0:
+                    self.file_handler.flush()
+        return True
+
+    def _on_training_end(self):
+        self.file_handler.close()
+
+def plot_training_results(log_file="training_log.csv", output_img="training_plot.png"):
+    try:
+        data = np.genfromtxt(log_file, delimiter=',', names=True)
+        
+        if data.size == 0:
+            print("Log file is empty, skipping plot.")
+            return
+
+        episodes = data['episode']
+        
+        plt.figure(figsize=(15, 10))
+
+        plt.subplot(3, 1, 1)
+        plt.plot(episodes, data['total_reward'], label='Total Reward', color='black')
+        plt.title("Total Reward per Episode")
+        plt.grid(True, alpha=0.3)
+
+        plt.subplot(3, 1, 2)
+        plt.plot(episodes, data['stuck_penalty'], label='Stuck Penalty', color='red', alpha=0.7)
+        plt.plot(episodes, data['damage_taken_penalty'], label='Damage Taken', color='orange', alpha=0.7)
+        plt.plot(episodes, data['miss_penalty'], label='Miss Penalty', color='brown', alpha=0.7)
+        plt.legend()
+        plt.title("Penalties (Negative Reward)")
+        plt.grid(True, alpha=0.3)
+
+        plt.subplot(3, 1, 3)
+        plt.plot(episodes, data['kill_reward'], label='Kill Reward', color='green', alpha=0.7)
+        plt.plot(episodes, data['hit_reward'], label='Hit Reward', color='blue', alpha=0.7)
+        plt.plot(episodes, data['move_reward'], label='Move Reward', color='purple', alpha=0.7)
+        plt.legend()
+        plt.title("Positive Actions (Bonuses)")
+        plt.grid(True, alpha=0.3)
+
+        plt.tight_layout()
+        plt.savefig(output_img)
+        print(f"Plot saved to {output_img}")
+        plt.close()
+    except Exception as e:
+        print(f"Error plotting data: {e}")
 
 class FusedInputExtractor(BaseFeaturesExtractor):
     def __init__(self, observation_space: spaces.Box, features_dim: int = 256):
@@ -111,12 +193,10 @@ class VizDoomGym(gym.Env):
         self.KILL_REWARD = 1000.0
         self.HIT_REWARD = 200.0
         self.ITEM_REWARD = 20.0
-
         self.MISSED_SHOT_PENALTY = -100.0
         self.WALL_STUCK_PENALTY = -1000.0
         self.MIN_DISTANCE_BEFORE_PENALTY = 1.0
         self.HIT_TAKEN_PENALTY = -500.0
-
         self.MAP_CELL_SIZE = 64.0
 
     def _reset_state_tracking(self):
@@ -124,6 +204,16 @@ class VizDoomGym(gym.Env):
         self.last_cell = None
         self.stuck_timer = 0
         self.last_pos = (0, 0)
+
+        self.episode_hist = {
+            "total_reward": 0.0,
+            "stuck_penalty": 0.0,
+            "kill_reward": 0.0,
+            "hit_reward": 0.0,
+            "move_reward": 0.0,
+            "miss_penalty": 0.0,
+            "damage_taken_penalty": 0.0
+        }
 
         state = self.game.get_state()
         if state:
@@ -160,7 +250,7 @@ class VizDoomGym(gym.Env):
 
     def _calculate_custom_rewards(self, current_vars):
         reward = 0.0
-
+        
         c_health = current_vars[0]
         c_ammo = current_vars[1]
         c_x, c_y = current_vars[2], current_vars[3]
@@ -170,10 +260,7 @@ class VizDoomGym(gym.Env):
         c_kills = current_vars[7] if len(current_vars) > 7 else 0
 
         self.actualize_buff(c_x, c_y)
-        # dist = math.sqrt((c_x - self.last_pos_x)**2 + (c_y - self.last_pos_y)**2)
-        dist = math.sqrt(
-            (c_x - np.mean(self.c_x_buff)) ** 2 + (c_y - np.mean(self.c_y_buff)) ** 2
-        )
+        dist = math.sqrt((c_x - np.mean(self.c_x_buff)) ** 2 + (c_y - np.mean(self.c_y_buff)) ** 2)
 
         if dist < self.MIN_DISTANCE_BEFORE_PENALTY:
             self.stuck_timer += 1
@@ -182,6 +269,7 @@ class VizDoomGym(gym.Env):
 
         if self.stuck_timer > 15:
             reward += self.WALL_STUCK_PENALTY
+            self.episode_hist["stuck_penalty"] += self.WALL_STUCK_PENALTY # <--- LOG
             self.stuck_timer = 10
 
         ammo_used = self.last_ammo - c_ammo
@@ -190,15 +278,22 @@ class VizDoomGym(gym.Env):
         if ammo_used > 0:
             if damage_dealt <= 0:
                 reward += self.MISSED_SHOT_PENALTY
+                self.episode_hist["miss_penalty"] += self.MISSED_SHOT_PENALTY # <--- LOG
 
         if c_kills > self.last_kill_count:
-            reward += (c_kills - self.last_kill_count) * self.KILL_REWARD
+            r = (c_kills - self.last_kill_count) * self.KILL_REWARD
+            reward += r
+            self.episode_hist["kill_reward"] += r # <--- LOG
 
         if damage_dealt > 0:
-            reward += damage_dealt * self.HIT_REWARD
+            r = damage_dealt * self.HIT_REWARD
+            reward += r
+            self.episode_hist["hit_reward"] += r # <--- LOG
 
         if c_health < self.last_health:
             reward += self.HIT_TAKEN_PENALTY
+            self.episode_hist["damage_taken_penalty"] += self.HIT_TAKEN_PENALTY # <--- LOG
+
 
         cell_x = int(c_x / self.MAP_CELL_SIZE)
         cell_y = int(c_y / self.MAP_CELL_SIZE)
@@ -207,6 +302,7 @@ class VizDoomGym(gym.Env):
             if current_cell not in self.visited_cells:
                 self.visited_cells[current_cell] = True
                 reward += 2.0
+                self.episode_hist["move_reward"] += 2.0 # <--- LOG
             self.last_cell = current_cell
 
         self.last_health = c_health
@@ -226,18 +322,27 @@ class VizDoomGym(gym.Env):
         base_reward = self.game.make_action(actions)
         done = self.game.is_episode_finished()
 
+        info = {}
+
         if not done:
             state = self.game.get_state()
             obs = flatten_observation(state.screen_buffer, state.game_variables)
             custom_reward = self._calculate_custom_rewards(state.game_variables)
             total_reward = base_reward + custom_reward
+            
+            self.episode_hist["total_reward"] += total_reward
         else:
             obs = np.zeros(self.observation_space.shape, dtype=np.float32)
             total_reward = base_reward
+            self.episode_hist["total_reward"] += base_reward
+
             if self.last_health > 0:
                 total_reward += self.GOAL_REWARD
+                self.episode_hist["total_reward"] += self.GOAL_REWARD
 
-        return obs, total_reward, done, False, {}
+            info["episode_stats"] = self.episode_hist
+
+        return obs, total_reward, done, False, info
 
     def reset(self, seed=None, options=None):
         super().reset(seed=seed)
@@ -306,7 +411,7 @@ def main(args):
             features_extractor_kwargs=dict(features_dim=512),
         ),
         verbose=1,
-        learning_rate=args.learning_rate,
+        learning_rate=linear_schedule(args.learning_rate),
         batch_size=256,
         n_steps=2048,
         ent_coef=0.01,

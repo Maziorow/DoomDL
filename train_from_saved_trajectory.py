@@ -167,11 +167,13 @@ def flatten_observation(screen, game_vars):
 
 class VizDoomGym(gym.Env):
     def __init__(self, config_path="env_configurations/doom_min.cfg"):
+        self.MAX_ACTION_NUMBER = 7000
         super().__init__()
         self.game = vzd.DoomGame()
         self.game.load_config(config_path)
         self.game.set_window_visible(False)
         self.game.set_screen_format(vzd.ScreenFormat.RGB24)
+        self.game.set_episode_timeout(self.MAX_ACTION_NUMBER)
         self.game.init()
 
         self.action_size = len(self.game.get_available_buttons())
@@ -195,9 +197,10 @@ class VizDoomGym(gym.Env):
         self.KILL_REWARD = 1000.0
         self.HIT_REWARD = 200.0
         self.ITEM_REWARD = 20.0
+        self.MOVE_REWARD = 20.0
         self.MISSED_SHOT_PENALTY = -100.0
         self.WALL_STUCK_PENALTY = -1000.0
-        self.MIN_DISTANCE_BEFORE_PENALTY = 0.5
+        self.MIN_DISTANCE_BEFORE_PENALTY = 5.0
         self.HIT_TAKEN_PENALTY = -500.0
         self.MAP_CELL_SIZE = 64.0
 
@@ -305,8 +308,8 @@ class VizDoomGym(gym.Env):
         if current_cell != self.last_cell:
             if current_cell not in self.visited_cells:
                 self.visited_cells[current_cell] = True
-                reward += 20.0 * self.REWARD_SCALING
-                self.episode_hist["move_reward"] += 20.0 * self.REWARD_SCALING # <--- LOG
+                reward += self.MOVE_REWARD * self.REWARD_SCALING
+                self.episode_hist["move_reward"] += self.MOVE_REWARD * self.REWARD_SCALING # <--- LOG
             self.last_cell = current_cell
 
         self.last_health = c_health
@@ -325,6 +328,7 @@ class VizDoomGym(gym.Env):
 
         base_reward = self.game.make_action(actions)
         done = self.game.is_episode_finished()
+        timeout = self.game.get_episode_time() >= (self.MAX_ACTION_NUMBER - 1)
 
         info = {}
 
@@ -340,9 +344,12 @@ class VizDoomGym(gym.Env):
             total_reward = base_reward
             self.episode_hist["total_reward"] += base_reward
 
-            if self.last_health > 0:
-                total_reward += self.GOAL_REWARD
-                self.episode_hist["total_reward"] += self.GOAL_REWARD
+            if self.last_health > 0 and not timeout:
+                total_reward += self.GOAL_REWARD * self.REWARD_SCALING
+                self.episode_hist["total_reward"] += self.GOAL_REWARD * self.REWARD_SCALING
+            elif self.last_health > 0 and timeout:
+                total_reward += -self.GOAL_REWARD * self.REWARD_SCALING
+                self.episode_hist["total_reward"] += -self.GOAL_REWARD * self.REWARD_SCALING
 
             info["episode_stats"] = self.episode_hist
 

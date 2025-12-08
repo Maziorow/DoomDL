@@ -197,7 +197,7 @@ class VizDoomGym(gym.Env):
         self.ITEM_REWARD = 20.0
         self.MISSED_SHOT_PENALTY = -100.0
         self.WALL_STUCK_PENALTY = -1000.0
-        self.MIN_DISTANCE_BEFORE_PENALTY = 1.0
+        self.MIN_DISTANCE_BEFORE_PENALTY = 0.5
         self.HIT_TAKEN_PENALTY = -500.0
         self.MAP_CELL_SIZE = 64.0
 
@@ -305,8 +305,8 @@ class VizDoomGym(gym.Env):
         if current_cell != self.last_cell:
             if current_cell not in self.visited_cells:
                 self.visited_cells[current_cell] = True
-                reward += 2.0 * self.REWARD_SCALING
-                self.episode_hist["move_reward"] += 2.0 * self.REWARD_SCALING # <--- LOG
+                reward += 20.0 * self.REWARD_SCALING
+                self.episode_hist["move_reward"] += 20.0 * self.REWARD_SCALING # <--- LOG
             self.last_cell = current_cell
 
         self.last_health = c_health

@@ -53,7 +53,7 @@ class RewardCalculator:
         self.KILL_REWARD = 1000.0
         self.HIT_REWARD = 200.0
         self.ITEM_REWARD = 20.0
-        self.MOVE_REWARD = 100.0
+        self.MOVE_REWARD = 200.0
         self.MISSED_SHOT_PENALTY = -100.0
         self.WALL_STUCK_PENALTY = -200.0
         self.MIN_DISTANCE_BEFORE_PENALTY = 20.0

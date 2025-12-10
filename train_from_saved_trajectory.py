@@ -199,7 +199,7 @@ class VizDoomGym(gym.Env):
         self.MOVE_REWARD = 60.0
         self.MISSED_SHOT_PENALTY = -100.0
         self.WALL_STUCK_PENALTY = -1000.0
-        self.MIN_DISTANCE_BEFORE_PENALTY = 5.0
+        self.MIN_DISTANCE_BEFORE_PENALTY = 20.0
         self.HIT_TAKEN_PENALTY = -500.0
         self.MAP_CELL_SIZE = 64.0
 

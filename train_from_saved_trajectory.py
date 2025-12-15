@@ -10,7 +10,7 @@ from stable_baselines3 import PPO
 from stable_baselines3.common.env_util import make_vec_env
 from stable_baselines3.common.vec_env import DummyVecEnv
 from stable_baselines3.common.torch_layers import BaseFeaturesExtractor
-from stable_baselines3.common.callbacks import EvalCallback, BaseCallback
+from stable_baselines3.common.callbacks import EvalCallback, BaseCallback, CheckpointCallback
 from imitation.algorithms.bc import BC
 from imitation.data.types import Transitions
 import os
@@ -28,7 +28,6 @@ def linear_schedule(initial_value: float) -> Callable[[float], float]:
 SCREEN_W, SCREEN_H = 60, 45
 SCREEN_CHANNELS = 3
 SCREEN_SIZE = SCREEN_W * SCREEN_H * SCREEN_CHANNELS
-N_ENVS = 8
 
 REWARD_SCALING = 0.001
 
@@ -197,7 +196,7 @@ class VizDoomGym(gym.Env):
         self.KILL_REWARD = 1000.0
         self.HIT_REWARD = 200.0
         self.ITEM_REWARD = 20.0
-        self.MOVE_REWARD = 20.0
+        self.MOVE_REWARD = 60.0
         self.MISSED_SHOT_PENALTY = -100.0
         self.WALL_STUCK_PENALTY = -50.0
         self.MIN_DISTANCE_BEFORE_PENALTY = 5.0
@@ -462,6 +461,9 @@ def main(args):
         param.requires_grad = False
 
     if args.ppo_train:
+        ckpt_dir = os.path.join(log_dir, "checkpoints")
+        os.makedirs(ckpt_dir, exist_ok=True)
+
         eval_env = make_vec_env(make_env, n_envs=1)
 
         eval_callback = EvalCallback(
@@ -473,7 +475,13 @@ def main(args):
             render=False,
         )
 
-        callbacks = [eval_callback, reward_logger]
+        checkpoint_callback = CheckpointCallback(
+            save_freq=3 * args.eval_frequency, # Every third eval
+            save_path=ckpt_dir,
+            name_prefix="doom_model"
+        )
+
+        callbacks = [eval_callback, reward_logger, checkpoint_callback]
 
         model.learn(total_timesteps=args.ppo_timesteps, callback=callbacks)
 

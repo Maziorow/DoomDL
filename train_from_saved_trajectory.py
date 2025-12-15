@@ -156,9 +156,9 @@ def flatten_observation(screen, game_vars):
     if flat_vars.shape[0] > 1:
         flat_vars[1] /= 100.0  # ammo
     if flat_vars.shape[0] > 2:
-        flat_vars[2] /= 1024.0  # x
+        flat_vars[2] /= 64.0  # x
     if flat_vars.shape[0] > 3:
-        flat_vars[3] /= 1024.0  # y
+        flat_vars[3] /= 64.0  # y
     if flat_vars.shape[0] > 4:
         flat_vars[4:] /= 50.0
 
@@ -199,7 +199,7 @@ class VizDoomGym(gym.Env):
         self.ITEM_REWARD = 20.0
         self.MOVE_REWARD = 20.0
         self.MISSED_SHOT_PENALTY = -100.0
-        self.WALL_STUCK_PENALTY = -1000.0
+        self.WALL_STUCK_PENALTY = -50.0
         self.MIN_DISTANCE_BEFORE_PENALTY = 5.0
         self.HIT_TAKEN_PENALTY = -500.0
         self.MAP_CELL_SIZE = 64.0
@@ -457,6 +457,10 @@ def main(args):
 
     print("--- Szkolenie ---")
 
+    policy = model.policy
+    for param in policy.features_extractor.parameters():
+        param.requires_grad = False
+
     if args.ppo_train:
         eval_env = make_vec_env(make_env, n_envs=1)
 
@@ -490,7 +494,7 @@ if __name__ == "__main__":
     parser.add_argument("--model", type=str, default="NONE")
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--learning_rate", type=float, default=0.0001)
-    parser.add_argument("--eval_frequency", type=int, default=20000)
+    parser.add_argument("--eval_frequency", type=int, default=7000)
 
     args = parser.parse_args()
     N_ENVS = args.envs

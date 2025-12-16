@@ -507,7 +507,10 @@ if __name__ == "__main__":
     parser.add_argument("--eval_frequency", type=int, default=7000)
     parser.add_argument("--minibatch_size", type=int, default=128)
 
+
     args = parser.parse_args()
     N_ENVS = args.envs
 
+    for arg, value in vars(args).items():
+        print(f"{arg}: {value}")
     main(args)

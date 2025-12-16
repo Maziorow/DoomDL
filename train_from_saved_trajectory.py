@@ -422,8 +422,8 @@ def main(args):
         ),
         verbose=1,
         learning_rate=linear_schedule(args.learning_rate),
-        batch_size=256,
-        n_steps=2048,
+        batch_size=args.ppo_batch_size,
+        n_steps=args.ppo_n_steps,
         ent_coef=0.01,
     )
     if args.model != "NONE":
@@ -451,11 +451,11 @@ def main(args):
                 policy=policy,
                 demonstrations=transitions,
                 rng=rng, #np.random.default_rng(args.seed),
-                batch_size = len(transitions.obs) - len(transitions)%args.minibatch_size,
-                minibatch_size = args.minibatch_size
+                batch_size = len(transitions.obs) - len(transitions.obs)%args.bc_minibatch_size,
+                minibatch_size = args.bc_minibatch_size
             )
             bc_trainer.train(n_epochs=args.bc_epochs)
-
+        model.save(model_save_path+"BC_only")
     print("--- Szkolenie ---")
 
     policy = model.policy
@@ -505,8 +505,9 @@ if __name__ == "__main__":
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--learning_rate", type=float, default=0.0001)
     parser.add_argument("--eval_frequency", type=int, default=7000)
-    parser.add_argument("--minibatch_size", type=int, default=128)
-
+    parser.add_argument("--bc_minibatch_size", type=int, default=128)
+    parser.add_argument("--ppo_n_steps", type=int, default=4096)
+    parser.add_argument("--ppo_batch_size", type=int, default=256)
 
     args = parser.parse_args()
     N_ENVS = args.envs

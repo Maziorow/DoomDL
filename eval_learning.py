@@ -44,13 +44,13 @@ class FusedInputExtractor(BaseFeaturesExtractor):
         self.n_vars = total_input - SCREEN_SIZE
         
         self.cnn = nn.Sequential(
-            nn.Conv2d(SCREEN_CHANNELS, 32, kernel_size=8, stride=4),
+            nn.Conv2d(3, 16, 3, stride=1, padding=1),
             nn.ReLU(),
-            nn.Conv2d(32, 64, kernel_size=4, stride=2),
+            nn.Conv2d(16, 32, 3, stride=2, padding=1),
             nn.ReLU(),
-            nn.Conv2d(64, 64, kernel_size=3, stride=1),
+            nn.BatchNorm2d(32),
+            nn.Conv2d(32, 64, 3, stride=2, padding=1),
             nn.ReLU(),
-            nn.Flatten(),
         )
 
         with th.no_grad():
@@ -158,8 +158,10 @@ if __name__ == "__main__":
                 if len(state.game_variables) >= 4:
                     map_img = minimap.update(state.game_variables)
                     cv2.imshow("Minimap", map_img)
-            
-            if cv2.waitKey(28) == 27:
+                    game_screen = obs[env.num_vars:].reshape(SCREEN_H, SCREEN_W, SCREEN_CHANNELS)
+                    cv2.imshow("Game Screen", game_screen)            
+
+            if cv2.waitKey(1) & 0xFF == ord('q'):
                 break
         
         if done:

@@ -197,9 +197,9 @@ class VizDoomGym(gym.Env):
         self.HIT_REWARD = 200.0
         self.ITEM_REWARD = 20.0
         self.MOVE_REWARD = 60.0
-        self.MISSED_SHOT_PENALTY = -100.0
+        self.MISSED_SHOT_PENALTY = -200.0
         self.WALL_STUCK_PENALTY = -50.0
-        self.MIN_DISTANCE_BEFORE_PENALTY = 5.0
+        self.MIN_DISTANCE_BEFORE_PENALTY = 3.5
         self.HIT_TAKEN_PENALTY = -500.0
         self.MAP_CELL_SIZE = 64.0
 
@@ -444,13 +444,15 @@ def main(args):
                 print(f"Error: {e}")
                 return
             print("--- Szkolenie na podstawie nagranej rozgrywki---")
-
+            rng = np.random.RandomState(0)
             bc_trainer = BC(
                 observation_space=venv.observation_space,
                 action_space=venv.action_space,
                 policy=policy,
                 demonstrations=transitions,
-                rng=np.random.default_rng(args.seed),
+                rng=rng, #np.random.default_rng(args.seed),
+                batch_size = len(transitions.obs) - len(transitions)%args.minibatch_size,
+                minibatch_size = args.minibatch_size
             )
             bc_trainer.train(n_epochs=args.bc_epochs)
 
@@ -503,6 +505,7 @@ if __name__ == "__main__":
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--learning_rate", type=float, default=0.0001)
     parser.add_argument("--eval_frequency", type=int, default=7000)
+    parser.add_argument("--minibatch_size", type=int, default=128)
 
     args = parser.parse_args()
     N_ENVS = args.envs

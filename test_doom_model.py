@@ -1,3 +1,4 @@
+"""
 import cv2
 import numpy as np
 import vizdoom as vzd
@@ -13,7 +14,7 @@ import time
 SCREEN_W, SCREEN_H = 60, 45
 SCREEN_CHANNELS = 3
 SCREEN_SIZE = SCREEN_W * SCREEN_H * SCREEN_CHANNELS
-MODEL_PATH = "doom_agent_model.zip"
+MODEL_PATH = "logs/best_model.zip"
 CONFIG_PATH = "env_configurations/doom_min.cfg"
 
 
@@ -149,3 +150,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+    """

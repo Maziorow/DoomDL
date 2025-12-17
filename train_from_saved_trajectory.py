@@ -166,6 +166,7 @@ def flatten_observation(screen, game_vars):
 
 class VizDoomGym(gym.Env):
     def __init__(self, config_path="env_configurations/doom_min.cfg"):
+        global args
         self.MAX_ACTION_NUMBER = 7000
         super().__init__()
         self.game = vzd.DoomGame()
@@ -192,18 +193,18 @@ class VizDoomGym(gym.Env):
 
         # --- REWARD TUNING ---
         # We can set rewards high as at the end they're getting scaled by 1000
-        self.GOAL_REWARD = 5000.0
-        self.KILL_REWARD = 1000.0
-        self.HIT_REWARD = 200.0
-        self.ITEM_REWARD = 20.0
-        self.MOVE_REWARD = 60.0
-        self.MISSED_SHOT_PENALTY = -200.0
-        self.WALL_STUCK_PENALTY = -50.0
-        self.MIN_DISTANCE_BEFORE_PENALTY = 3.5
-        self.HIT_TAKEN_PENALTY = -500.0
-        self.MAP_CELL_SIZE = 64.0
+        self.GOAL_REWARD = args.goal_reward
+        self.KILL_REWARD = args.kill_reward
+        self.HIT_REWARD = args.hit_reward
+        self.ITEM_REWARD = args.item_reward
+        self.MOVE_REWARD = args.move_reward
+        self.MISSED_SHOT_PENALTY = args.missed_shot_penalty
+        self.WALL_STUCK_PENALTY = args.wall_stuck_penalty
+        self.MIN_DISTANCE_BEFORE_PENALTY = args.min_distance_before_penalty
+        self.HIT_TAKEN_PENALTY = args.hit_taken_penalty
+        self.MAP_CELL_SIZE = args.map_cell_size
+        self.REWARD_SCALING = args.reward_scaling
 
-        self.REWARD_SCALING = 0.001
 
     def _reset_state_tracking(self):
         self.visited_cells = {}
@@ -397,7 +398,7 @@ def make_env():
     return VizDoomGym()
 
 
-def main(args):
+def main():
     th.manual_seed(args.seed)
     np.random.seed(args.seed)
     expert_dir = "./doom_expert"
@@ -495,6 +496,7 @@ def main(args):
 
 
 if __name__ == "__main__":
+    global args
     parser = argparse.ArgumentParser()
     parser.add_argument("--bc_train", action="store_true")
     parser.add_argument("--ppo_train", action="store_true")
@@ -509,9 +511,25 @@ if __name__ == "__main__":
     parser.add_argument("--ppo_n_steps", type=int, default=4096)
     parser.add_argument("--ppo_batch_size", type=int, default=256)
 
+    parser.add_argument("--goal_reward", type=float, default=5000.0, help="Reward for achieving the goal")
+    parser.add_argument("--kill_reward", type=float, default=1000.0, help="Reward for killing an enemy or target")
+    parser.add_argument("--hit_reward", type=float, default=200.0, help="Reward for hitting a target")
+    parser.add_argument("--item_reward", type=float, default=20.0, help="Reward for collecting an item")
+    parser.add_argument("--move_reward", type=float, default=60.0, help="Reward for movement")
+
+    parser.add_argument("--missed_shot_penalty", type=float, default=-200.0, help="Penalty for missed shot")
+    parser.add_argument("--wall_stuck_penalty", type=float, default=-50.0, help="Penalty for getting stuck at a wall")
+    parser.add_argument("--hit_taken_penalty", type=float, default=-500.0, help="Penalty for taking damage")
+
+    parser.add_argument("--min_distance_before_penalty", type=float, default=3.5, help="Minimum distance before penalty is applied")
+    parser.add_argument("--map_cell_size", type=float, default=64.0, help="Size of the map cells")
+    parser.add_argument("--reward_scaling", type=float, default=0.001, help="Scaling factor for rewards")
+
+
+
     args = parser.parse_args()
     N_ENVS = args.envs
 
     for arg, value in vars(args).items():
         print(f"{arg}: {value}")
-    main(args)
+    main()

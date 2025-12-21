@@ -299,8 +299,9 @@ class VizDoomGym(gym.Env):
             self.episode_hist["kill_reward"] += r * self.REWARD_SCALING # <--- LOG
 
         if c_secrets > self.last_secret_count:
-            reward += self.SECRET_REWARD * self.REWARD_SCALING
-            self.episode_hist["secret_reward"] += self.SECRET_REWARD * self.REWARD_SCALING # <--- LOG
+            reward += (self.SECRET_REWARD * self.REWARD_SCALING) * (c_secrets - self.last_secret_count)
+            self.episode_hist["secret_reward"] += (self.SECRET_REWARD * self.REWARD_SCALING) * (c_secrets - self.last_secret_count) # <--- LOG
+            self.last_secret_count = c_secrets
 
         if damage_dealt > 0:
             r = damage_dealt * self.HIT_REWARD

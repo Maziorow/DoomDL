@@ -50,6 +50,7 @@ class MinimapViz:
 class RewardCalculator:
     def __init__(self):
         self.GOAL_REWARD = 5000.0
+        self.SECRET_REWARD = 2500.0
         self.KILL_REWARD = 1000.0
         self.HIT_REWARD = 200.0
         self.ITEM_REWARD = 20.0
@@ -98,11 +99,13 @@ class RewardCalculator:
             self.last_ammo = initial_vars[1]
             self.last_hit_count = initial_vars[4] if len(initial_vars) > 4 else 0
             self.last_kill_count = initial_vars[7] if len(initial_vars) > 7 else 0
+            self.last_secret_count = initial_vars[6] if len(initial_vars) > 6 else 0
         else:
             self.last_health = 100
             self.last_ammo = 50
             self.last_hit_count = 0
             self.last_kill_count = 0
+            self.last_secret_count = 0
 
     def calculate_step_reward(self, current_vars, base_reward, done, episode_time):
         if done:
@@ -119,6 +122,7 @@ class RewardCalculator:
         c_ammo = current_vars[1]
         c_x, c_y = current_vars[2], current_vars[3]
         c_hits = current_vars[4] if len(current_vars) > 4 else 0
+        c_secrets = current_vars[6] if len(current_vars) > 6 else 0
         c_kills = current_vars[7] if len(current_vars) > 7 else 0
 
         self.actualize_buff(c_x, c_y)
@@ -147,6 +151,9 @@ class RewardCalculator:
             r = (c_kills - self.last_kill_count) * self.KILL_REWARD
             reward += r * self.REWARD_SCALING
 
+        if c_secrets > self.last_secret_count:
+            reward += (self.SECRET_REWARD * self.REWARD_SCALING) * (c_secrets - self.last_secret_count)
+
         if damage_dealt > 0:
             r = damage_dealt * self.HIT_REWARD
             reward += r * self.REWARD_SCALING
@@ -169,6 +176,7 @@ class RewardCalculator:
         self.last_ammo = c_ammo
         self.last_hit_count = c_hits
         self.last_kill_count = c_kills
+        self.last_secret_count = c_secrets
 
         return (base_reward * self.REWARD_SCALING) + reward
 

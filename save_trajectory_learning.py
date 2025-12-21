@@ -7,7 +7,7 @@ import numpy as np
 import math
 
 CONFIG_PATH = "env_configurations/doom_min.cfg"
-EPISODES_TO_RECORD = 3
+EPISODES_TO_RECORD = 5
 DIR_NAME = "doom_expert"
 
 class MinimapViz:

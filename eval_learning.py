@@ -9,7 +9,7 @@ from stable_baselines3 import PPO
 from stable_baselines3.common.torch_layers import BaseFeaturesExtractor
 import os
 
-SCREEN_W, SCREEN_H = 60, 45
+SCREEN_W, SCREEN_H = 120, 90
 SCREEN_CHANNELS = 3
 SCREEN_SIZE = SCREEN_W * SCREEN_H * SCREEN_CHANNELS
 
@@ -40,25 +40,28 @@ class MinimapViz:
 class FusedInputExtractor(BaseFeaturesExtractor):
     def __init__(self, observation_space: spaces.Box, features_dim: int = 256):
         super().__init__(observation_space, features_dim)
+
         total_input = observation_space.shape[0]
         self.n_vars = total_input - SCREEN_SIZE
-        
+
         self.cnn = nn.Sequential(
-            nn.Conv2d(3, 16, 3, stride=1, padding=1),
+            nn.Conv2d(3, 32, kernel_size=8, stride=4, padding=0),
             nn.ReLU(),
-            nn.Conv2d(16, 32, 3, stride=2, padding=1),
+            nn.Conv2d(32, 64, kernel_size=4, stride=2, padding=0),
             nn.ReLU(),
             nn.BatchNorm2d(32),
-            nn.Conv2d(32, 64, 3, stride=2, padding=1),
+            nn.Conv2d(64, 64, kernel_size=3, stride=1, padding=0),
             nn.ReLU(),
         )
 
         with th.no_grad():
             dummy_img = th.zeros(1, SCREEN_CHANNELS, SCREEN_H, SCREEN_W)
-            n_flatten = self.cnn(dummy_img).shape[1]
+            n_flatten = self.cnn(dummy_img).view(1, -1).shape[1]
 
         self.linear = nn.Sequential(
-            nn.Linear(n_flatten + self.n_vars, features_dim),
+            nn.Linear(n_flatten + self.n_vars, 1024), 
+            nn.ReLU(),
+            nn.Linear(1024, features_dim),
             nn.ReLU()
         )
 

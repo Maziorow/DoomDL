@@ -25,7 +25,7 @@ def linear_schedule(initial_value: float) -> Callable[[float], float]:
         return progress_remaining * initial_value
     return func
 
-SCREEN_W, SCREEN_H = 60, 45
+SCREEN_W, SCREEN_H = 120, 90
 SCREEN_CHANNELS = 3
 SCREEN_SIZE = SCREEN_W * SCREEN_H * SCREEN_CHANNELS
 
@@ -94,6 +94,7 @@ def plot_training_results(log_file="training_log.csv", output_img="training_plot
         plt.plot(episodes, data['kill_reward'], label='Kill Reward', color='green', alpha=0.7)
         plt.plot(episodes, data['hit_reward'], label='Hit Reward', color='blue', alpha=0.7)
         plt.plot(episodes, data['move_reward'], label='Move Reward', color='purple', alpha=0.7)
+        plt.plot(episodes, data['secret_reward'], label='Secret Reward', color='red', alpha=0.7)
         plt.legend()
         plt.title("Positive Actions (Bonuses)")
         plt.grid(True, alpha=0.3)
@@ -113,12 +114,12 @@ class FusedInputExtractor(BaseFeaturesExtractor):
         self.n_vars = total_input - SCREEN_SIZE
 
         self.cnn = nn.Sequential(
-            nn.Conv2d(3, 16, 3, stride=1, padding=1),
+            nn.Conv2d(3, 32, kernel_size=8, stride=4, padding=0),
             nn.ReLU(),
-            nn.Conv2d(16, 32, 3, stride=2, padding=1),
+            nn.Conv2d(32, 64, kernel_size=4, stride=2, padding=0),
             nn.ReLU(),
             nn.BatchNorm2d(32),
-            nn.Conv2d(32, 64, 3, stride=2, padding=1),
+            nn.Conv2d(64, 64, kernel_size=3, stride=1, padding=0),
             nn.ReLU(),
         )
 
@@ -127,7 +128,10 @@ class FusedInputExtractor(BaseFeaturesExtractor):
             n_flatten = self.cnn(dummy_img).view(1, -1).shape[1]
 
         self.linear = nn.Sequential(
-            nn.Linear(n_flatten + self.n_vars, features_dim), nn.ReLU()
+            nn.Linear(n_flatten + self.n_vars, 1024), 
+            nn.ReLU(),
+            nn.Linear(1024, features_dim),
+            nn.ReLU()
         )
 
     def forward(self, observations):
@@ -194,6 +198,7 @@ class VizDoomGym(gym.Env):
         # --- REWARD TUNING ---
         # We can set rewards high as at the end they're getting scaled by 1000
         self.GOAL_REWARD = args.goal_reward
+        self.SECRET_REWARD = args.secret_reward
         self.KILL_REWARD = args.kill_reward
         self.HIT_REWARD = args.hit_reward
         self.ITEM_REWARD = args.item_reward
@@ -218,6 +223,7 @@ class VizDoomGym(gym.Env):
             "kill_reward": 0.0,
             "hit_reward": 0.0,
             "move_reward": 0.0,
+            "secret_reward": 0.0,
             "miss_penalty": 0.0,
             "damage_taken_penalty": 0.0
         }
@@ -291,6 +297,10 @@ class VizDoomGym(gym.Env):
             r = (c_kills - self.last_kill_count) * self.KILL_REWARD
             reward += r * self.REWARD_SCALING
             self.episode_hist["kill_reward"] += r * self.REWARD_SCALING # <--- LOG
+
+        if c_secrets > self.last_secret_count:
+            reward += self.SECRET_REWARD * self.REWARD_SCALING
+            self.episode_hist["secret_reward"] += self.SECRET_REWARD * self.REWARD_SCALING # <--- LOG
 
         if damage_dealt > 0:
             r = damage_dealt * self.HIT_REWARD
@@ -516,6 +526,7 @@ if __name__ == "__main__":
     parser.add_argument("--hit_reward", type=float, default=200.0, help="Reward for hitting a target")
     parser.add_argument("--item_reward", type=float, default=20.0, help="Reward for collecting an item")
     parser.add_argument("--move_reward", type=float, default=60.0, help="Reward for movement")
+    parser.add_argument("--secret_reward", type=float, default=2500.0, help="Reward for movement")
 
     parser.add_argument("--missed_shot_penalty", type=float, default=-200.0, help="Penalty for missed shot")
     parser.add_argument("--wall_stuck_penalty", type=float, default=-50.0, help="Penalty for getting stuck at a wall")

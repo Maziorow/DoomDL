@@ -1,0 +1,8 @@
+_vizdoom.ini
+# File is still licensed
+doom.wad
+doom_ppo_model.zip
+*pkl
+*zip
+/logs/**
+/*venv*/

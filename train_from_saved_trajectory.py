@@ -479,9 +479,7 @@ def main():
     print(f"Creating {N_ENVS} parallel environments...")
     venv = make_vec_env(make_env, n_envs=N_ENVS, vec_env_cls=DummyVecEnv)
 
-    temp = make_env()
-    env_vars = temp.num_vars
-    temp.close()
+    env_vars = venv.envs[0].num_vars
 
     model = PPO(
         "MlpPolicy",
@@ -551,7 +549,7 @@ def main():
         )
 
         checkpoint_callback = CheckpointCallback(
-            save_freq=3 * args.eval_frequency,
+            save_freq=args.eval_frequency,
             save_path=ckpt_dir,
             name_prefix="doom_model"
         )

@@ -7,45 +7,72 @@ import numpy as np
 import math
 
 CONFIG_PATH = "env_configurations/doom_min.cfg"
-EPISODES_TO_RECORD = 35
+EPISODES_TO_RECORD = 1
 DIR_NAME = "doom_expert"
 
-class MinimapViz:
-    def __init__(self, width=500, height=500, scale=1.0):
-        self.w = width
-        self.h = height
-        self.scale = scale
-        self.canvas = np.zeros((self.h, self.w, 3), dtype=np.uint8)
-        self.path = []
-        self.WORLD_MAX = 8192
-        self.WORLD_MIN = -8192
+class DoomMiniMap:
+    def __init__(self):
+        self.MAP_RESOLUTION = 64.0 
+        self.MAP_BOUNDS = (-3000, 4000, -3000, 4000) 
+        
+        self.MAP_W = int((self.MAP_BOUNDS[1] - self.MAP_BOUNDS[0]) / self.MAP_RESOLUTION) + 1
+        self.MAP_H = int((self.MAP_BOUNDS[3] - self.MAP_BOUNDS[2]) / self.MAP_RESOLUTION) + 1
+        
+        self.visited_grid = np.zeros((self.MAP_H, self.MAP_W), dtype=np.uint8)
+        self.last_cell = None
+        
+        self.VIEW_CELLS = 40
 
     def update(self, game_vars):
-        if len(game_vars) < 4: return self.canvas
+        if len(game_vars) < 4:
+            return np.zeros((500, 500, 3), dtype=np.uint8), False
+
         px = game_vars[2]
         py = game_vars[3]
-        effective_scale = 15
-        sx = int((self.w // 2) + (px / effective_scale))
-        sy = int((self.h // 2) - (py / effective_scale))
+        
+        idx_x = int((px - self.MAP_BOUNDS[0]) / self.MAP_RESOLUTION)
+        idx_y = int((py - self.MAP_BOUNDS[2]) / self.MAP_RESOLUTION)
+        
+        idx_x = max(0, min(self.MAP_W - 1, idx_x))
+        idx_y = max(0, min(self.MAP_H - 1, idx_y))
+        
+        current_cell = (idx_x, idx_y)
+        is_new_cell = False
 
-        if 0 <= sx < self.w and 0 <= sy < self.h:
-            self.path.append((sx, sy))
+        if current_cell != self.last_cell:
+            if self.visited_grid[idx_y, idx_x] == 0:
+                self.visited_grid[idx_y, idx_x] = 255
+                is_new_cell = True
+            self.last_cell = current_cell
 
-        self.canvas[:] = 0
-        if len(self.path) > 1:
-            for i in range(1, len(self.path)):
-                cv2.line(self.canvas, self.path[i-1], self.path[i], (255, 255, 255), 1)
+        map_vis = np.zeros((self.MAP_H, self.MAP_W, 3), dtype=np.uint8)
+        map_vis[self.visited_grid == 255] = [0, 255, 0]
+        pad = self.VIEW_CELLS
+        padded_map = cv2.copyMakeBorder(map_vis, pad, pad, pad, pad, cv2.BORDER_CONSTANT, value=[50, 50, 50])
+        
+        center_x = idx_x + pad
+        center_y = idx_y + pad
+        
+        half_view = self.VIEW_CELLS // 2
+        x1 = center_x - half_view
+        x2 = center_x + half_view
+        y1 = center_y - half_view
+        y2 = center_y + half_view
 
-        display_img = self.canvas.copy()
-        cv2.circle(display_img, (sx, sy), 3, (0, 0, 255), -1)
+        crop = padded_map[y1:y2, x1:x2]
+        display_img = cv2.resize(crop, (500, 500), interpolation=cv2.INTER_NEAREST)
+        
+        center_px = 250 
+        cv2.rectangle(display_img, (center_px-5, center_px-5), (center_px+5, center_px+5), (0, 0, 255), -1)
 
-        if len(self.path) > 0:
-            cv2.circle(display_img, self.path[0], 2, (0, 255, 0), -1)
+        coord_text = f"X: {px:.1f}, Y: {py:.1f}"
+        cv2.putText(display_img, coord_text, (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 1)
+        
+        return display_img, is_new_cell
 
-        coord_text = f"World X: {px:.1f}, World Y: {py:.1f}"
-        cv2.putText(display_img, coord_text, (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
-
-        return display_img
+    def reset(self):
+        self.visited_grid = np.zeros((self.MAP_H, self.MAP_W), dtype=np.uint8)
+        self.last_cell = None
 
 class RewardCalculator:
     def __init__(self):
@@ -54,18 +81,16 @@ class RewardCalculator:
         self.KILL_REWARD = 1000.0
         self.HIT_REWARD = 200.0
         self.ITEM_REWARD = 20.0
-        self.MOVE_REWARD = 200.0
-        self.MISSED_SHOT_PENALTY = -100.0
-        self.WALL_STUCK_PENALTY = -200.0
-        self.MIN_DISTANCE_BEFORE_PENALTY = 20.0
+        self.MOVE_REWARD = 60.0 
+        self.MISSED_SHOT_PENALTY = -200.0
+        self.WALL_STUCK_PENALTY = -50.0
+        self.MIN_DISTANCE_BEFORE_PENALTY = 3.5
         self.HIT_TAKEN_PENALTY = -500.0
-        self.MAP_CELL_SIZE = 64.0
+        self.STAY_ON_VISITED_PENALTY = -5.0
         self.REWARD_SCALING = 0.001
         self.MAX_ACTION_NUMBER = 7000 
         self.MAX_BUFF_SIZE = 10
 
-        self.visited_cells = {}
-        self.last_cell = None
         self.stuck_timer = 0
         self.c_x_buff = []
         self.c_y_buff = []
@@ -74,22 +99,19 @@ class RewardCalculator:
         self.last_ammo = 50
         self.last_hit_count = 0
         self.last_kill_count = 0
+        self.last_secret_count = 0
 
     def actualize_buff(self, c_x, c_y):
         if len(self.c_x_buff) == 0:
             self.c_x_buff = [c_x] * (self.MAX_BUFF_SIZE - 1)
             self.c_y_buff = [c_y] * (self.MAX_BUFF_SIZE - 1)
-
         if len(self.c_x_buff) >= self.MAX_BUFF_SIZE:
             self.c_x_buff.pop(0)
             self.c_y_buff.pop(0)
-
         self.c_x_buff.append(c_x)
         self.c_y_buff.append(c_y)
 
     def reset(self, initial_vars):
-        self.visited_cells = {}
-        self.last_cell = None
         self.stuck_timer = 0
         self.c_x_buff = []
         self.c_y_buff = []
@@ -107,7 +129,7 @@ class RewardCalculator:
             self.last_kill_count = 0
             self.last_secret_count = 0
 
-    def calculate_step_reward(self, current_vars, base_reward, done, episode_time):
+    def calculate_step_reward(self, current_vars, base_reward, done, episode_time, is_new_cell):
         if done:
             total_reward = base_reward
             timeout = episode_time >= (self.MAX_ACTION_NUMBER - 1)
@@ -125,9 +147,9 @@ class RewardCalculator:
         c_secrets = current_vars[6] if len(current_vars) > 6 else 0
         c_kills = current_vars[7] if len(current_vars) > 7 else 0
 
+        # Stuck Logic
         self.actualize_buff(c_x, c_y)
         dist = math.sqrt((c_x - np.mean(self.c_x_buff)) ** 2 + (c_y - np.mean(self.c_y_buff)) ** 2)
-
         if dist < self.MIN_DISTANCE_BEFORE_PENALTY:
             self.stuck_timer += 1
         else:
@@ -138,21 +160,21 @@ class RewardCalculator:
             self.stuck_timer = 10
             print("Stuck penalty!")
 
-        
-
+        # Combat Logic
         ammo_used = self.last_ammo - c_ammo
         damage_dealt = c_hits - self.last_hit_count
 
-        if ammo_used > 0:
-            if damage_dealt <= 0:
-                reward += self.MISSED_SHOT_PENALTY * self.REWARD_SCALING
+        if ammo_used > 0 and damage_dealt <= 0:
+            reward += self.MISSED_SHOT_PENALTY * self.REWARD_SCALING
 
         if c_kills > self.last_kill_count:
             r = (c_kills - self.last_kill_count) * self.KILL_REWARD
             reward += r * self.REWARD_SCALING
+            print("Kill reward!")
 
         if c_secrets > self.last_secret_count:
             reward += (self.SECRET_REWARD * self.REWARD_SCALING) * (c_secrets - self.last_secret_count)
+            print("Secret found!")
 
         if damage_dealt > 0:
             r = damage_dealt * self.HIT_REWARD
@@ -162,15 +184,12 @@ class RewardCalculator:
             reward += self.HIT_TAKEN_PENALTY * self.REWARD_SCALING
             print("Hit taken penalty!")
 
-        cell_x = int(c_x / self.MAP_CELL_SIZE)
-        cell_y = int(c_y / self.MAP_CELL_SIZE)
-        current_cell = (cell_x, cell_y)
-        if current_cell != self.last_cell:
-            if current_cell not in self.visited_cells:
-                self.visited_cells[current_cell] = True
-                reward += self.MOVE_REWARD * self.REWARD_SCALING
-                print(f"Visited cell {current_cell} for the first time!")
-            self.last_cell = current_cell
+
+        if is_new_cell:
+            reward += self.MOVE_REWARD * self.REWARD_SCALING
+            print(f"Explored new cell! (+{self.MOVE_REWARD})")
+        else:
+            reward += self.STAY_ON_VISITED_PENALTY * self.REWARD_SCALING
 
         self.last_health = c_health
         self.last_ammo = c_ammo
@@ -192,15 +211,14 @@ def main():
     print(f"Game Variables Found: {vars_count}")
     
     if vars_count < 4:
-        print("WARNING: It looks like POSITION_X and POSITION_Y are missing!")
-        print("Please check available_game_variables in doom_min.cfg")
-        input("Press Enter to continue anyway (or Ctrl+C to fix config)...")
+        print("WARNING: Position variables missing from config!")
+        input("Press Enter to continue...")
 
     action_count = len(game.get_available_buttons())
     print(f"Actions initialized: {action_count}")
     print("Controls: W, S, A, D, Space (Shoot), E (Turn R), U (Use), Q (Turn L). ESC to Quit.")
 
-    minimap = MinimapViz()
+    minimap = DoomMiniMap()
     reward_calc = RewardCalculator()
 
     if not os.path.exists(DIR_NAME):
@@ -213,9 +231,7 @@ def main():
             print(f"--- Recording Episode {episode + 1} ---")
             game.new_episode()
             
-            minimap.path = [] 
-            minimap.canvas[:] = 0 
-            
+            minimap.reset()
             initial_state = game.get_state()
             reward_calc.reset(initial_state.game_variables)
 
@@ -224,9 +240,10 @@ def main():
                 screen = state.screen_buffer
                 game_vars = state.game_variables
 
+                map_img, is_new_cell = minimap.update(game_vars)
+
                 cv2.imshow("Doom Recorder", cv2.cvtColor(screen, cv2.COLOR_RGB2BGR))
-                map_img = minimap.update(game_vars)
-                cv2.imshow("Minimap", map_img)
+                cv2.imshow("MiniMap (Green=Visited, Red=You)", map_img)
                 cv2.waitKey(1)
 
                 actions = [False] * action_count
@@ -251,7 +268,6 @@ def main():
                 episode_time = game.get_episode_time()
 
                 action_index = 8
-                
                 if actions[2]: action_index = 2
                 elif actions[3]: action_index = 3
                 elif actions[4]: action_index = 4
@@ -275,7 +291,9 @@ def main():
                     else:
                         next_vars = game_vars 
 
-                    calculated_reward = reward_calc.calculate_step_reward(next_vars, base_reward, done, episode_time)
+                    calculated_reward = reward_calc.calculate_step_reward(
+                        next_vars, base_reward, done, episode_time, is_new_cell
+                    )
 
                     current_obs = {
                         "screen": screen, 

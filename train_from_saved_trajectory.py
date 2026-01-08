@@ -51,7 +51,7 @@ class DetailedRewardLogger(BaseCallback):
         self.writer.writerow([
             "episode", "total_reward", "stuck_penalty", "kill_reward", 
             "hit_reward", "move_reward", "miss_penalty", "damage_taken_penalty",
-            "secret_reward"
+            "secret_reward", "visited_penalty", "goal_reward"
         ])
         self.episode_count = 0
 
@@ -69,7 +69,9 @@ class DetailedRewardLogger(BaseCallback):
                     stats["move_reward"],
                     stats["miss_penalty"],
                     stats["damage_taken_penalty"],
-                    stats.get("secret_reward", 0.0)
+                    stats.get("secret_reward", 0.0),
+                    stats.get("visited_penalty", 0.0),
+                    stats.get("goal_reward", 0.0)
                 ])
                 if self.episode_count % 10 == 0:
                     self.file_handler.flush()
@@ -95,6 +97,8 @@ def plot_training_results(log_file="training_log.csv", output_img="training_plot
         plt.plot(episodes, data['stuck_penalty'], label='Stuck Penalty', color='red', alpha=0.7)
         plt.plot(episodes, data['damage_taken_penalty'], label='Damage Taken', color='orange', alpha=0.7)
         plt.plot(episodes, data['miss_penalty'], label='Miss Penalty', color='brown', alpha=0.7)
+        if 'visited_penalty' in data.dtype.names:
+            plt.plot(episodes, data['visited_penalty'], label='Visited Penalty', color='pink', alpha=0.7)
         plt.legend()
         plt.title("Penalties")
         plt.grid(True, alpha=0.3)
@@ -104,6 +108,8 @@ def plot_training_results(log_file="training_log.csv", output_img="training_plot
         plt.plot(episodes, data['move_reward'], label='Move Reward', color='purple', alpha=0.7)
         if 'secret_reward' in data.dtype.names:
             plt.plot(episodes, data['secret_reward'], label='Secret Reward', color='gold', alpha=0.7)
+        if 'goal_reward' in data.dtype.names:
+            plt.plot(episodes, data['goal_reward'], label='Goal Reward', color='blue', alpha=0.7)
         plt.legend()
         plt.title("Bonuses")
         plt.grid(True, alpha=0.3)
@@ -265,7 +271,8 @@ class VizDoomGym(gym.Env):
         self.episode_hist = {
             "total_reward": 0.0, "stuck_penalty": 0.0, "kill_reward": 0.0,
             "hit_reward": 0.0, "move_reward": 0.0, "secret_reward": 0.0,
-            "miss_penalty": 0.0, "damage_taken_penalty": 0.0
+            "miss_penalty": 0.0, "damage_taken_penalty": 0.0,
+            "visited_penalty": 0.0, "goal_reward": 0.0
         }
         
         self.minimap.reset()
@@ -359,7 +366,9 @@ class VizDoomGym(gym.Env):
                 reward += self.MOVE_REWARD * self.REWARD_SCALING
                 self.episode_hist["move_reward"] += self.MOVE_REWARD * self.REWARD_SCALING
         else:
-            reward += self.STAY_ON_VISITED_PENALTY * self.REWARD_SCALING
+            p = self.STAY_ON_VISITED_PENALTY * self.REWARD_SCALING
+            reward += p
+            self.episode_hist["visited_penalty"] += p
             
         self.last_cell = current_cell
 
@@ -398,11 +407,15 @@ class VizDoomGym(gym.Env):
             self.episode_hist["total_reward"] += base_reward
 
             if self.last_health > 0 and not timeout:
-                total_reward += self.GOAL_REWARD * self.REWARD_SCALING
-                self.episode_hist["total_reward"] += self.GOAL_REWARD * self.REWARD_SCALING
+                r = self.GOAL_REWARD * self.REWARD_SCALING
+                total_reward += r
+                self.episode_hist["total_reward"] += r
+                self.episode_hist["goal_reward"] += r
             elif self.last_health > 0 and timeout:
-                total_reward += -self.GOAL_REWARD * self.REWARD_SCALING
-                self.episode_hist["total_reward"] += -self.GOAL_REWARD * self.REWARD_SCALING
+                r = -self.GOAL_REWARD * self.REWARD_SCALING
+                total_reward += r
+                self.episode_hist["total_reward"] += r
+                self.episode_hist["goal_reward"] += r
 
             info["episode_stats"] = self.episode_hist
 

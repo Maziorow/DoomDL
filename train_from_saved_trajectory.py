@@ -406,16 +406,23 @@ class VizDoomGym(gym.Env):
             total_reward = base_reward
             self.episode_hist["total_reward"] += base_reward
 
-            if self.last_health > 0 and not timeout:
-                r = self.GOAL_REWARD * self.REWARD_SCALING
-                total_reward += r
-                self.episode_hist["total_reward"] += r
-                self.episode_hist["goal_reward"] += r
-            elif self.last_health > 0 and timeout:
-                r = -self.GOAL_REWARD * self.REWARD_SCALING
-                total_reward += r
-                self.episode_hist["total_reward"] += r
-                self.episode_hist["goal_reward"] += r
+            if self.game.is_player_dead():
+                reward_val = -self.GOAL_REWARD * self.REWARD_SCALING
+                total_reward += reward_val
+                self.episode_hist["total_reward"] += reward_val
+                self.episode_hist["goal_reward"] += reward_val
+                
+            elif timeout:
+                reward_val = -self.GOAL_REWARD * self.REWARD_SCALING
+                total_reward += reward_val
+                self.episode_hist["total_reward"] += reward_val
+                self.episode_hist["goal_reward"] += reward_val
+
+            else:
+                reward_val = self.GOAL_REWARD * self.REWARD_SCALING
+                total_reward += reward_val
+                self.episode_hist["total_reward"] += reward_val
+                self.episode_hist["goal_reward"] += reward_val
 
             info["episode_stats"] = self.episode_hist
 
